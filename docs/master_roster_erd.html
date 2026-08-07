@@ -1,0 +1,181 @@
+<style>
+#erd svg.erDiagram .divider path { stroke-opacity: 0.5; }
+#erd svg.erDiagram .row-rect-odd path,
+#erd svg.erDiagram .row-rect-odd rect,
+#erd svg.erDiagram .row-rect-even path,
+#erd svg.erDiagram .row-rect-even rect { stroke: none !important; }
+</style>
+<div id="erd"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark = matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({
+  startOnLoad: false,
+  theme: 'base',
+  fontFamily: '"Anthropic Sans", sans-serif',
+  themeVariables: {
+    darkMode: dark,
+    fontSize: '13px',
+    fontFamily: '"Anthropic Sans", sans-serif',
+    lineColor: dark ? '#9c9a92' : '#73726c',
+    textColor: dark ? '#c2c0b6' : '#3d3d3a',
+  },
+});
+const src = `erDiagram
+    ROLE ||--o{ USER : assigned_to
+    STORE ||--o{ USER : employs
+    STORE ||--o{ EMPLOYEE : has
+    USER ||--o{ SALES_RECORD : enters
+    STORE ||--o{ SALES_RECORD : records
+    SALES_RECORD }o--|| SALES_SOURCE_TYPE : sourced_from
+    SALES_RECORD ||--o| SALES_VALIDATION : validated_by
+    STORE ||--o{ SALES_FORECAST : forecasted_for
+    SALES_FORECAST }o--|| FORECAST_MODEL_RUN : generated_by
+    LABOR_GUIDELINE }o--|| STORE : applies_to
+    SALES_FORECAST ||--o{ LABOR_RECOMMENDATION : drives
+    STORE ||--o{ ROSTER : has
+    ROSTER ||--o{ SHIFT : contains
+    SHIFT }o--|| EMPLOYEE : assigned_to
+    ROSTER }o--|| USER : approved_by
+    SHIFT ||--o| ACTUAL_HOURS : recorded_as
+    STORE ||--o{ KPI_SNAPSHOT : summarizes
+
+    USER {
+        uuid id PK
+        string full_name
+        string email
+        uuid role_id FK
+        uuid store_id FK
+        boolean is_active
+    }
+    ROLE {
+        uuid id PK
+        string name
+        jsonb permissions
+    }
+    STORE {
+        uuid id PK
+        string name
+        string region
+        uuid area_coach_id FK
+    }
+    EMPLOYEE {
+        uuid id PK
+        uuid store_id FK
+        string full_name
+        string position
+        numeric hourly_rate
+        boolean is_active
+    }
+    SALES_RECORD {
+        uuid id PK
+        uuid store_id FK
+        date sales_date
+        numeric amount
+        uuid source_type_id FK
+        uuid entered_by FK
+        timestamp created_at
+    }
+    SALES_SOURCE_TYPE {
+        uuid id PK
+        string name
+    }
+    SALES_VALIDATION {
+        uuid id PK
+        uuid imported_record_id FK
+        uuid manual_record_id FK
+        string status
+        numeric variance
+        uuid reviewed_by FK
+        timestamp reviewed_at
+    }
+    SALES_FORECAST {
+        uuid id PK
+        uuid store_id FK
+        date forecast_date
+        string daypart
+        numeric forecasted_sales
+        uuid model_run_id FK
+    }
+    FORECAST_MODEL_RUN {
+        uuid id PK
+        timestamp run_at
+        string model_version
+        numeric accuracy_score
+    }
+    LABOR_GUIDELINE {
+        uuid id PK
+        uuid store_id FK
+        numeric target_productivity
+        numeric target_col_percent
+        numeric min_staff_per_shift
+    }
+    LABOR_RECOMMENDATION {
+        uuid id PK
+        uuid forecast_id FK
+        uuid guideline_id FK
+        numeric recommended_hours
+    }
+    ROSTER {
+        uuid id PK
+        uuid store_id FK
+        date week_start
+        string status
+        uuid approved_by FK
+        timestamp approved_at
+    }
+    SHIFT {
+        uuid id PK
+        uuid roster_id FK
+        uuid employee_id FK
+        date shift_date
+        time start_time
+        time end_time
+        numeric planned_hours
+    }
+    ACTUAL_HOURS {
+        uuid id PK
+        uuid shift_id FK
+        numeric actual_hours
+        timestamp clock_in
+        timestamp clock_out
+        uuid recorded_by FK
+    }
+    KPI_SNAPSHOT {
+        uuid id PK
+        uuid store_id FK
+        date snapshot_date
+        numeric productivity
+        numeric col_percent
+        numeric remaining_labor_hours
+        numeric forecast_accuracy
+        numeric sales_performance
+    }`;
+const { svg } = await mermaid.render('erd-svg', src);
+document.getElementById('erd').innerHTML = svg;
+
+document.querySelectorAll('#erd svg.erDiagram .node').forEach(node => {
+  const firstPath = node.querySelector('path[d]');
+  if (!firstPath) return;
+  const d = firstPath.getAttribute('d');
+  const nums = d.match(/-?[\d.]+/g)?.map(Number);
+  if (!nums || nums.length < 8) return;
+  const xs = [nums[0], nums[2], nums[4], nums[6]];
+  const ys = [nums[1], nums[3], nums[5], nums[7]];
+  const x = Math.min(...xs), y = Math.min(...ys);
+  const w = Math.max(...xs) - x, h = Math.max(...ys) - y;
+  const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+  rect.setAttribute('x', x); rect.setAttribute('y', y);
+  rect.setAttribute('width', w); rect.setAttribute('height', h);
+  rect.setAttribute('rx', '8');
+  for (const a of ['fill', 'stroke', 'stroke-width', 'class', 'style']) {
+    if (firstPath.hasAttribute(a)) rect.setAttribute(a, firstPath.getAttribute(a));
+  }
+  firstPath.replaceWith(rect);
+});
+
+document.querySelectorAll('#erd svg.erDiagram .row-rect-odd path, #erd svg.erDiagram .row-rect-even path').forEach(p => {
+  p.setAttribute('stroke', 'none');
+});
+</script>
