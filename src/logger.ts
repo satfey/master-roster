@@ -1,4 +1,25 @@
-import { FailedRow, ImportSummary } from './types';
+import { FailedRow, ImportSummary, PreviewRow } from './types';
+
+export function logPreviewTable(preview: PreviewRow[]): void {
+  const table = preview.map((r) => ({
+    Row: r.rowNumber,
+    Status: r.status,
+    'Store ID': r.data?.storeId ?? '-',
+    'Store Name': r.data?.storeName ?? '-',
+    Date: r.data?.date ?? '-',
+    'Gross Actual': r.data?.grossActual ?? '-',
+    Budget: r.data?.budget ?? '-',
+    Errors: r.errors.join('; '),
+  }));
+  console.table(table);
+}
+
+export function logPreviewSummary(preview: PreviewRow[]): void {
+  const valid = preview.filter((r) => r.status === 'valid').length;
+  const invalid = preview.filter((r) => r.status === 'invalid').length;
+  const skipped = preview.filter((r) => r.status === 'skipped').length;
+  console.log(`Total rows: ${preview.length} | Valid: ${valid} | Invalid: ${invalid} | Skipped: ${skipped}\n`);
+}
 
 export function logProgress(current: number, total: number): void {
   const pct = total === 0 ? 100 : Math.round((current / total) * 100);

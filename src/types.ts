@@ -1,6 +1,6 @@
 export interface RawSalesRow {
-  storeBuId: string | null;
-  storeId: string | null;
+  storeBuId: number | null;
+  storeId: number | null;
   storeName: string | null;
   week: number | null;
   date: string | null;
@@ -42,14 +42,14 @@ export interface ParsedRowResult {
 }
 
 export interface StorePayload {
-  storeBuId: string | null;
-  storeId: string;
+  storeBuId: number | null;
+  storeId: number;
   storeName: string | null;
 }
 
 export interface SalesRecordPayload {
-  storeId: string;
-  storeBuId: string | null;
+  storeId: number;
+  storeBuId: number | null;
   storeName: string | null;
   week: number | null;
   date: string;
@@ -84,6 +84,15 @@ export interface SalesRecordPayload {
 
   otherSales: number | null;
   serviceCharge: number | null;
+}
+
+export type RowStatus = 'valid' | 'invalid' | 'skipped';
+
+export interface PreviewRow {
+  rowNumber: number;
+  status: RowStatus;
+  data: RawSalesRow | null;
+  errors: string[];
 }
 
 export interface FailedRow {

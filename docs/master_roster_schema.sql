@@ -27,6 +27,7 @@ CREATE TABLE role (
 CREATE TABLE store (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     name           VARCHAR(150) NOT NULL,
+    "storeCode"    VARCHAR(4),    -- join key for the sales_report importer's "Store Id" column (String(reportStoreId)); quoted to preserve camelCase, matching code's .in('storeCode', ...) usage
     region         VARCHAR(100),
     area_coach_id  UUID
 );
@@ -97,6 +98,58 @@ CREATE TABLE sales_validation (
     reviewed_by         UUID REFERENCES "user"(id)                ON UPDATE CASCADE ON DELETE SET NULL,
     reviewed_at         TIMESTAMP,
     UNIQUE (imported_record_id)
+);
+
+-- ----------------------------------------------------------------------------
+-- SALES_REPORT
+-- Richer daily sales report import (Gross/Docket/Customer actual, budget,
+-- variance, LY, and MTD figures) — a separate format/table from SALES_RECORD,
+-- fed by a fixed 26-column Excel layout matched against store."storeCode".
+-- NOTE: entered_by here references `users` (plural, unquoted) to match the
+-- live Supabase table, which differs from the rest of this doc's stale
+-- `"user"` (singular, quoted) references elsewhere — not corrected here since
+-- that's a pre-existing, unrelated inconsistency out of scope for this table.
+-- ----------------------------------------------------------------------------
+CREATE TABLE sales_report (
+    id                            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id                      UUID NOT NULL REFERENCES store(id)             ON UPDATE CASCADE ON DELETE CASCADE,
+    report_store_id               INTEGER NOT NULL,   -- raw Excel "Store ID", kept for traceability
+    store_bu_id                   INTEGER,            -- denormalized (no BU table)
+    store_name                    VARCHAR(150),       -- denormalized as-imported (may differ from store.name)
+    week                          VARCHAR(20),        -- e.g. "2026-27" — not numeric, preserved as-is
+
+    report_date                   DATE NOT NULL,
+
+    gross_actual                  NUMERIC(14, 2),
+    gross_budget                  NUMERIC(14, 2),
+    gross_variance_percent        NUMERIC(7, 4),
+    gross_actual_ly               NUMERIC(14, 2),
+    gross_ly_variance_percent     NUMERIC(7, 4),
+    gross_actual_mtd              NUMERIC(14, 2),
+    gross_budget_mtd              NUMERIC(14, 2),
+    gross_mtd_variance_percent    NUMERIC(7, 4),
+    gross_actual_ly_mtd           NUMERIC(14, 2),
+
+    docket_actual                 INTEGER,
+    docket_budget                 INTEGER,
+    docket_variance_percent       NUMERIC(7, 4),
+    docket_actual_ly              INTEGER,
+    docket_ly_variance_percent    NUMERIC(7, 4),
+
+    customer_actual                INTEGER,
+    customer_budget                INTEGER,
+    customer_variance_percent      NUMERIC(7, 4),
+    customer_actual_ly             INTEGER,
+    customer_ly_variance_percent   NUMERIC(7, 4),
+
+    other_sales                   NUMERIC(14, 2),
+    service_charge                 NUMERIC(14, 2),
+
+    source_type_id                UUID NOT NULL REFERENCES sales_source_type(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    entered_by                     UUID REFERENCES users(id)                     ON UPDATE CASCADE ON DELETE SET NULL,
+    created_at                     TIMESTAMP NOT NULL DEFAULT now(),
+
+    UNIQUE (store_id, report_date)
 );
 
 -- ----------------------------------------------------------------------------

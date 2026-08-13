@@ -47,8 +47,8 @@ const REQUIRED_FIELDS: Array<{ key: keyof RawSalesRow; label: string }> = [
 
 export function parseRow(row: unknown[]): ParsedRowResult {
   const data: RawSalesRow = {
-    storeBuId: trimOrNull(row[COL.storeBuId]),
-    storeId: trimOrNull(row[COL.storeId]),
+    storeBuId: toNumberOrNull(row[COL.storeBuId]),
+    storeId: toNumberOrNull(row[COL.storeId]),
     storeName: trimOrNull(row[COL.storeName]),
     week: toNumberOrNull(row[COL.week]),
     date: excelDateToISO(row[COL.date]),
