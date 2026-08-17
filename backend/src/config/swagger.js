@@ -132,6 +132,22 @@ const schemas = {
       created_at: { type: 'string', format: 'date-time' },
     },
   },
+  SalesByHour: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      store_id: { type: 'string', format: 'uuid' },
+      report_store_id: { type: 'integer', example: 1001 },
+      brand_name: { type: 'string', nullable: true, example: 'ABC' },
+      store_name: { type: 'string', nullable: true, example: 'ABC Central' },
+      report_month: { type: 'string', format: 'date', example: '2026-07-01', description: 'Always the 1st of the month — supplied by the caller, not present in the Excel.' },
+      hour: { type: 'integer', example: 9 },
+      gross_sale: { type: 'number', example: 1280 },
+      source_type_id: { type: 'string', format: 'uuid' },
+      entered_by: { type: 'string', format: 'uuid', nullable: true },
+      created_at: { type: 'string', format: 'date-time' },
+    },
+  },
   ForecastModelRun: {
     type: 'object',
     properties: {

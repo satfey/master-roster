@@ -153,6 +153,31 @@ CREATE TABLE sales_report (
 );
 
 -- ----------------------------------------------------------------------------
+-- SALES_BY_HOUR
+-- Hour-of-day sales breakdown import — this report has NO date column at all
+-- (confirmed with the report owner: each Gross Sale figure is aggregated
+-- across an entire month, not a single day), so report_month is supplied by
+-- the caller at import time, not parsed from the Excel file. Isolated from
+-- SALES_REPORT and SALES_RECORD; store lookup reuses store."storeCode".
+-- ----------------------------------------------------------------------------
+CREATE TABLE sales_by_hour (
+    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    store_id         UUID NOT NULL REFERENCES store(id)             ON UPDATE CASCADE ON DELETE CASCADE,
+    report_store_id  INTEGER NOT NULL,   -- raw Excel "Store Id", kept for traceability
+    brand_name       VARCHAR(150),       -- preserved when present, not required
+    store_name       VARCHAR(150),       -- denormalized as-imported (may differ from store.name)
+    report_month     DATE NOT NULL,      -- 1st of the month this file covers — supplied by the caller
+    hour             INTEGER NOT NULL,   -- hour-of-day label as given in the source file
+    gross_sale       NUMERIC(14, 2) NOT NULL,
+
+    source_type_id   UUID NOT NULL REFERENCES sales_source_type(id) ON UPDATE CASCADE ON DELETE RESTRICT,
+    entered_by       UUID REFERENCES users(id)                      ON UPDATE CASCADE ON DELETE SET NULL,
+    created_at       TIMESTAMP NOT NULL DEFAULT now(),
+
+    UNIQUE (store_id, report_month, hour)
+);
+
+-- ----------------------------------------------------------------------------
 -- FORECAST_MODEL_RUN
 -- ----------------------------------------------------------------------------
 CREATE TABLE forecast_model_run (
