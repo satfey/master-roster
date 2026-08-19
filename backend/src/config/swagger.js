@@ -48,7 +48,8 @@ const schemas = {
   Store: {
     type: 'object',
     properties: {
-      id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', description: 'Internal primary key — used for PUT/DELETE and other backend relationships, not meant for display.' },
+      storeId: { type: 'string', example: '1001', description: 'Business-facing Store ID (same value as storeCode) — this is what should be shown to users, not `id`.' },
       name: { type: 'string', example: 'Bangna Store' },
       region: { type: 'string', nullable: true, example: 'Bangkok' },
       area_coach_id: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002' },

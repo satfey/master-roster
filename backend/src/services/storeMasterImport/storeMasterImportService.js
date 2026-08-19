@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const { parseStoreMasterWorkbook } = require('./excelParser');
 const { transformRows } = require('./transform');
 const repo = require('../../repositories/storeMasterRepository');
@@ -18,32 +19,51 @@ function rowsConflict(a, b) {
 }
 
 /**
- * An unmatched Area Coach name is treated as "not assigned yet" rather than
- * a hard failure — the store is still created/updated with area_coach_id =
- * NULL, and a warning is attached so it can be found and fixed later. Once
- * the Area Coach user is added to `users`, re-importing the same file is
- * enough to backfill it (this row's action becomes UPDATE instead of
- * NO_CHANGE). An AMBIGUOUS match is a different kind of problem — the data
- * already contradicts itself — so that still blocks the row rather than
- * guessing which user was meant.
+ * Resolves every distinct Area Coach name referenced in the file to an
+ * area_coach row — reusing an existing match (case/whitespace-insensitive),
+ * or, when nothing matches, standing in a placeholder id shared by every
+ * row naming that same coach (in any casing/whitespace variant), so a name
+ * repeated across many rows resolves to exactly one area_coach, never one
+ * per row. Nothing is written here — the caller (commitStoreMasterImport)
+ * creates the real rows and remaps these placeholders; preview never gets
+ * that far, so the placeholder is all it ever sees.
+ *
+ * The Store Master Excel file is the only source of truth for Area Coach
+ * names — none are ever hard-coded in this codebase. An AMBIGUOUS match
+ * (2+ existing area_coach rows already share the name — area_coach.name has
+ * no unique constraint) is a different kind of problem — the data already
+ * contradicts itself — so that still blocks the row rather than guessing
+ * which one was meant.
+ *
+ * Returns a Map of normalizedName -> { id: placeholderId, name } for every
+ * name that needs creating.
  */
 async function resolveAreaCoaches(rows) {
-  const areaCoachMap = await repo.findAreaCoachUsersByName();
+  const areaCoachMap = await repo.findAreaCoachesByName();
+  const pendingByName = new Map();
 
   for (const row of rows) {
     if (row.areaCoachNameNormalized === null) {
       row.resolvedAreaCoachId = null; // blank Zone Update — documented as "no Area Coach", not an error
       continue;
     }
+
     const matches = areaCoachMap.get(row.areaCoachNameNormalized) || [];
-    if (matches.length === 0) {
-      row.warnings.push(`Area Coach "${row.areaCoachName}" not found — saved without an Area Coach`);
+    if (matches.length === 1) {
+      row.resolvedAreaCoachId = matches[0].id;
     } else if (matches.length > 1) {
       row.errors.push('Ambiguous Area Coach');
     } else {
-      row.resolvedAreaCoachId = matches[0].id;
+      if (!pendingByName.has(row.areaCoachNameNormalized)) {
+        pendingByName.set(row.areaCoachNameNormalized, { id: crypto.randomUUID(), name: row.areaCoachName });
+      }
+      row.resolvedAreaCoachId = pendingByName.get(row.areaCoachNameNormalized).id;
+      row.willCreateAreaCoach = true;
+      row.warnings.push(`Area Coach "${row.areaCoachName}" does not exist yet — will be created`);
     }
   }
+
+  return pendingByName;
 }
 
 /**
@@ -89,9 +109,9 @@ function formatEffectiveDateForDisplay(row) {
 /** Parses + validates the workbook against the DB. Never writes — used by both preview and commit to plan the same actions. */
 async function evaluateRows(buffer) {
   const { rows: rawRows } = await parseStoreMasterWorkbook(buffer);
-  const rows = transformRows(rawRows).map((r) => ({ ...r, resolvedAreaCoachId: null, duplicateInFile: false, warnings: [] }));
+  const rows = transformRows(rawRows).map((r) => ({ ...r, resolvedAreaCoachId: null, willCreateAreaCoach: false, duplicateInFile: false, warnings: [] }));
 
-  await resolveAreaCoaches(rows);
+  const pendingAreaCoaches = await resolveAreaCoaches(rows);
   const duplicateRowNumbers = applyDuplicateDetection(rows);
 
   const candidateCodes = [...new Set(rows.filter((r) => r.errors.length === 0 && r.storeCode !== null).map((r) => r.storeCode))];
@@ -122,18 +142,20 @@ async function evaluateRows(buffer) {
       errors: row.errors,
       warnings: row.warnings,
       effectiveDate: formatEffectiveDateForDisplay(row),
+      storeId: row.storeCode, // business-facing Store ID (e.g. "1001") — store.id (UUID) is never exposed here
       storeCode: row.storeCode,
       branch: row.branch,
       areaCoachName: row.areaCoachName,
       resolvedAreaCoachId: row.resolvedAreaCoachId,
+      willCreateAreaCoach: row.willCreateAreaCoach,
       action,
     };
   });
 
-  return { rows: previewRows, duplicateRowNumbers, storeMap };
+  return { rows: previewRows, duplicateRowNumbers, storeMap, pendingAreaCoaches };
 }
 
-function summarize({ rows, duplicateRowNumbers }) {
+function summarize({ rows, duplicateRowNumbers, pendingAreaCoaches }) {
   const distinctCreate = new Set(rows.filter((r) => r.action === 'CREATE').map((r) => r.storeCode));
   const distinctUpdate = new Set(rows.filter((r) => r.action === 'UPDATE').map((r) => r.storeCode));
 
@@ -144,6 +166,7 @@ function summarize({ rows, duplicateRowNumbers }) {
     duplicateRows: duplicateRowNumbers.size,
     newStoreCount: distinctCreate.size,
     updateStoreCount: distinctUpdate.size,
+    newAreaCoachCount: pendingAreaCoaches.size,
     rows,
   };
 }
@@ -152,16 +175,40 @@ async function previewStoreMasterImport(buffer) {
   return summarize(await evaluateRows(buffer));
 }
 
+/**
+ * Creates every pending Area Coach for real (bulk, deduped by the caller
+ * already) and returns a placeholderId -> realId map, so every row that was
+ * assigned a placeholder during evaluateRows can be substituted with the
+ * actual area_coach.id before store rows are written.
+ */
+async function createPendingAreaCoaches(pendingAreaCoaches) {
+  const placeholders = [...pendingAreaCoaches.values()];
+  if (!placeholders.length) return { remap: new Map(), areaCoachesCreated: [] };
+
+  const created = await repo.createAreaCoaches(placeholders.map((p) => p.name));
+  const realIdByName = new Map(created.map((c) => [c.name, c.id]));
+
+  const remap = new Map();
+  for (const placeholder of placeholders) {
+    remap.set(placeholder.id, realIdByName.get(placeholder.name));
+  }
+
+  return { remap, areaCoachesCreated: created };
+}
+
 async function commitStoreMasterImport(buffer) {
-  const { rows, storeMap } = await evaluateRows(buffer);
+  const { rows, storeMap, pendingAreaCoaches } = await evaluateRows(buffer);
+
+  const { remap: areaCoachRemap, areaCoachesCreated } = await createPendingAreaCoaches(pendingAreaCoaches);
+  const resolveFinalAreaCoachId = (id) => (id !== null && areaCoachRemap.has(id) ? areaCoachRemap.get(id) : id);
 
   const toCreate = rows.filter((r) => r.action === 'CREATE');
   const toUpdate = rows.filter((r) => r.action === 'UPDATE');
   const unchanged = rows.filter((r) => r.action === 'NO_CHANGE');
-  const failed = rows.filter((r) => r.status === 'invalid').map((r) => ({ rowNumber: r.rowNumber, storeCode: r.storeCode, errors: r.errors }));
+  const failed = rows.filter((r) => r.status === 'invalid').map((r) => ({ rowNumber: r.rowNumber, storeId: r.storeCode, storeCode: r.storeCode, errors: r.errors }));
 
-  const created = await repo.createStores(toCreate.map((r) => ({ storeCode: r.storeCode, name: r.branch, areaCoachId: r.resolvedAreaCoachId })));
-  const updated = await repo.updateStores(toUpdate.map((r) => ({ id: storeMap.get(r.storeCode).id, name: r.branch, areaCoachId: r.resolvedAreaCoachId })));
+  const created = await repo.createStores(toCreate.map((r) => ({ storeCode: r.storeCode, name: r.branch, areaCoachId: resolveFinalAreaCoachId(r.resolvedAreaCoachId) })));
+  const updated = await repo.updateStores(toUpdate.map((r) => ({ id: storeMap.get(r.storeCode).id, name: r.branch, areaCoachId: resolveFinalAreaCoachId(r.resolvedAreaCoachId) })));
 
   return {
     total: rows.length,
@@ -169,8 +216,9 @@ async function commitStoreMasterImport(buffer) {
     updated: updated.length,
     unchanged: unchanged.length,
     failed,
-    storesCreated: created.map((s) => ({ id: s.id, storeCode: s.storeCode, name: s.name, area_coach_id: s.area_coach_id })),
-    storesUpdated: updated.map((s) => ({ id: s.id, storeCode: s.storeCode, name: s.name, area_coach_id: s.area_coach_id })),
+    storesCreated: created.map((s) => ({ id: s.id, storeId: s.storeCode, storeCode: s.storeCode, name: s.name, area_coach_id: s.area_coach_id })),
+    storesUpdated: updated.map((s) => ({ id: s.id, storeId: s.storeCode, storeCode: s.storeCode, name: s.name, area_coach_id: s.area_coach_id })),
+    areaCoachesCreated: areaCoachesCreated.map((c) => ({ id: c.id, name: c.name })),
   };
 }
 

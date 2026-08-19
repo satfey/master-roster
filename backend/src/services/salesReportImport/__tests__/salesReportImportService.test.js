@@ -198,6 +198,43 @@ describe('salesReportImportService — store auto-creation on commit', () => {
   });
 });
 
+describe('salesReportImportService — API response: storeId is the business Store ID, not the UUID', () => {
+  test('Case 2: preview row storeId equals report_store_id (1001), and the UUID is only available under storeUuid', async () => {
+    createFakeStoreTable([{ id: 'baf9e13d-fd30-45c2-8ed3-000000000001', storeCode: '1001', name: 'A1001-A' }]);
+    const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+
+    const preview = await previewSalesReportImport(buffer);
+
+    expect(preview.rows[0].storeId).toBe(1001);
+    expect(preview.rows[0].storeUuid).toBe('baf9e13d-fd30-45c2-8ed3-000000000001');
+    expect(preview.rows[0].storeId).not.toBe(preview.rows[0].storeUuid);
+  });
+
+  test('Case 3: multiple stores in one file each report their own numeric storeId', async () => {
+    createFakeStoreTable([]);
+    const buffer = await buildWorkbook([
+      [30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500],
+      [30002, 1002, 'B1002-B', '2026-27', new Date(Date.UTC(2026, 6, 1)), 8000, 7500],
+      [30003, 1003, 'C1003-C', '2026-27', new Date(Date.UTC(2026, 6, 1)), 6000, 5500],
+    ]);
+
+    const preview = await previewSalesReportImport(buffer);
+
+    expect(preview.rows.map((r) => r.storeId)).toEqual([1001, 1002, 1003]);
+  });
+
+  test('Case 4: the database write still uses the internal UUID (store_id), unaffected by the response-facing storeId rename', async () => {
+    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'A1001-A' }]);
+    const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+
+    await commitSalesReportImport(buffer, 'uuid-user-1');
+
+    const [records] = repo.insertRecords.mock.calls[0];
+    expect(records[0].store_id).toBe('uuid-1001'); // FK relationship still UUID-based
+    expect(records[0].report_store_id).toBe(1001); // business id preserved separately, as before
+  });
+});
+
 describe('salesReportImportService — preview never writes to the DB', () => {
   test('preview never calls createStores, even for an unknown Store ID', async () => {
     createFakeStoreTable([]);

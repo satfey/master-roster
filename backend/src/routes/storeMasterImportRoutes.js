@@ -16,17 +16,17 @@ const upload = multer({ storage: multer.memoryStorage() });
  *       not a fixed row number. Column B (ID) maps to store.storeCode
  *       (preserved as a string — leading zeros are never stripped). Column C
  *       (BRANCH) maps to store.name. Column D (Zone Update) is matched
- *       (case/whitespace-normalized) against the full_name of active users
- *       holding the Area Coach role; the resolved user.id is written to
- *       store.area_coach_id. Column A (Effective Date) is informational only
- *       and is never persisted.
- *       If Zone Update is blank OR names an Area Coach that doesn't exist
- *       yet, the row is still valid — the store is saved with
- *       area_coach_id = NULL and a note is added to `warnings` (not
- *       `errors`) so it can be backfilled by re-importing the same file once
- *       that Area Coach is added to `users`. Only an AMBIGUOUS match (the
- *       name resolves to more than one Area Coach) blocks the row, since
- *       guessing which one was meant would be wrong regardless of timing.
+ *       (case/whitespace-normalized) against area_coach.name. The Excel file
+ *       is the only source of truth for Area Coaches — no names are
+ *       hard-coded anywhere: an existing match reuses its area_coach.id; a
+ *       name with no match is auto-created in area_coach (once per distinct
+ *       name, even if it appears in many rows or with different
+ *       casing/whitespace) and the new id is used — see `willCreateAreaCoach`
+ *       per row and `newAreaCoachCount`/`areaCoachesCreated` in the summary.
+ *       If Zone Update is blank, area_coach_id is left NULL. Only an
+ *       AMBIGUOUS match (2+ existing area_coach rows already share the name
+ *       — area_coach.name has no unique constraint) blocks the row, since
+ *       guessing which one was meant would be wrong.
  *       A Store ID already present in store.storeCode resolves to UPDATE
  *       (name + area_coach_id only — storeCode/id/region are never touched);
  *       a Store ID with no match resolves to CREATE; a row that would change
@@ -62,6 +62,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                         duplicateRows: { type: integer, description: 'Rows whose Store ID (column B) repeats elsewhere in the same file.' }
  *                         newStoreCount: { type: integer }
  *                         updateStoreCount: { type: integer }
+ *                         newAreaCoachCount: { type: integer, description: 'Number of distinct new Area Coach names that would be created on commit.' }
  *                         rows:
  *                           type: array
  *                           items:
@@ -72,10 +73,12 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                               errors: { type: array, items: { type: string } }
  *                               warnings: { type: array, items: { type: string }, description: 'Non-blocking notes, e.g. an unmatched Area Coach — the row is still valid.' }
  *                               effectiveDate: { type: string, nullable: true, description: 'Informational only — never persisted.' }
+ *                               storeId: { type: string, nullable: true, example: '1001', description: 'Same value as storeCode — store.id (UUID) is never exposed by this endpoint.' }
  *                               storeCode: { type: string, nullable: true, example: '1001' }
  *                               branch: { type: string, nullable: true, example: 'Bangna Store' }
  *                               areaCoachName: { type: string, nullable: true, example: 'Alice Area Coach' }
- *                               resolvedAreaCoachId: { type: string, format: uuid, nullable: true }
+ *                               resolvedAreaCoachId: { type: string, format: uuid, nullable: true, description: 'A real area_coach.id if matched, a not-yet-persisted placeholder if willCreateAreaCoach is true, or null.' }
+ *                               willCreateAreaCoach: { type: boolean, description: 'True if this row''s Area Coach name has no match yet and would be auto-created on commit.' }
  *                               action: { type: string, nullable: true, enum: [CREATE, UPDATE, NO_CHANGE] }
  *             example:
  *               success: true
@@ -87,16 +90,19 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 duplicateRows: 0
  *                 newStoreCount: 1
  *                 updateStoreCount: 0
+ *                 newAreaCoachCount: 1
  *                 rows:
  *                   - rowNumber: 4
  *                     status: valid
  *                     errors: []
- *                     warnings: []
+ *                     warnings: ['Area Coach "Alice Area Coach" does not exist yet — will be created']
  *                     effectiveDate: '2026-07-01'
+ *                     storeId: '1001'
  *                     storeCode: '1001'
  *                     branch: Bangna Store
  *                     areaCoachName: Alice Area Coach
  *                     resolvedAreaCoachId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
+ *                     willCreateAreaCoach: true
  *                     action: CREATE
  *       400:
  *         description: No file was uploaded, or no worksheet/header row could be found.
@@ -115,11 +121,15 @@ const upload = multer({ storage: multer.memoryStorage() });
  *     description: >
  *       For every valid row: creates the store if storeCode doesn't exist
  *       yet, or updates name/area_coach_id if it does (storeCode/id/region
- *       are never touched, Effective Date is never persisted). A Store ID
- *       repeated in the same file with matching Branch/Area Coach is only
- *       written once; a repeat with conflicting values is rejected on every
- *       affected row instead of picking one arbitrarily. Re-importing the
- *       same file is idempotent — it results in the same database state.
+ *       are never touched, Effective Date is never persisted). Any Area
+ *       Coach name with no existing area_coach match is created first (once
+ *       per distinct name — see `areaCoachesCreated`), and the new id is
+ *       used for every store that names it. A Store ID repeated in the same
+ *       file with matching Branch/Area Coach is only written once; a repeat
+ *       with conflicting values is rejected on every affected row instead of
+ *       picking one arbitrarily. Re-importing the same file is idempotent —
+ *       it results in the same database state, and does not create
+ *       duplicate Area Coaches for names it already created.
  *     tags: [Store Master]
  *     requestBody:
  *       required: true
@@ -155,6 +165,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                             type: object
  *                             properties:
  *                               rowNumber: { type: integer }
+ *                               storeId: { type: string, nullable: true }
  *                               storeCode: { type: string, nullable: true }
  *                               errors: { type: array, items: { type: string } }
  *                         storesCreated:
@@ -163,6 +174,14 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                         storesUpdated:
  *                           type: array
  *                           items: { $ref: '#/components/schemas/Store' }
+ *                         areaCoachesCreated:
+ *                           type: array
+ *                           description: Area Coaches auto-created during this commit because their name had no existing area_coach match.
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               id: { type: string, format: uuid }
+ *                               name: { type: string, example: 'Alice Area Coach' }
  *             example:
  *               success: true
  *               message: Store master data imported
@@ -174,14 +193,19 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 failed: []
  *                 storesCreated:
  *                   - id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa9
+ *                     storeId: '1002'
  *                     storeCode: '1002'
  *                     name: New Store
- *                     area_coach_id: null
+ *                     area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
  *                 storesUpdated:
  *                   - id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                     storeId: '1001'
  *                     storeCode: '1001'
  *                     name: Bangna Store
  *                     area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
+ *                 areaCoachesCreated:
+ *                   - id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
+ *                     name: Alice Area Coach
  *       400:
  *         description: No file was uploaded, or no worksheet/header row could be found.
  *         content:

@@ -1,15 +1,22 @@
 const supabase = require('../config/supabase');
+const { runInBatches, DEFAULT_BATCH_SIZE } = require('../utils/batchQuery');
 
 function recordKey(storeId, month, hour) {
   const iso = month instanceof Date ? month.toISOString().slice(0, 10) : String(month).slice(0, 10);
   return `${storeId}|${iso}|${hour}`;
 }
 
-/** Looks up stores by the report's "Store Id" column (integer in Excel), matched against store.storeCode (VARCHAR). */
+/**
+ * Looks up stores by the report's "Store Id" column (integer in Excel),
+ * matched against store.storeCode (VARCHAR). Batched — a full report can
+ * reference hundreds/thousands of distinct stores, and a single
+ * `.in('storeCode', codes)` request would otherwise build a request URL long
+ * enough to exceed PostgREST's ~16KB header limit (UND_ERR_HEADERS_OVERFLOW).
+ */
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
-  const { data: stores, error } = await supabase.from('store').select('*').in('storeCode', codes);
-  if (error) throw error;
+  console.log('[sales-by-hour] lookup:', { table: 'store', column: 'storeCode', filterCount: codes.length, batchSize: DEFAULT_BATCH_SIZE });
+  const stores = await runInBatches(codes, (batch) => supabase.from('store').select('*').in('storeCode', batch));
   return new Map(stores.map((s) => [s.storeCode, s]));
 }
 
@@ -39,16 +46,22 @@ async function getSalesByHourSourceType() {
   return sourceType;
 }
 
-/** Returns a Set of "storeId|YYYY-MM-DD|hour" keys already present in sales_by_hour, for duplicate detection. */
+/**
+ * Returns a Set of "storeId|YYYY-MM-DD|hour" keys already present in
+ * sales_by_hour, for duplicate detection. Batched — see findStoresByCodes
+ * above; store_id here is a list of UUIDs (36 chars each), which hits the
+ * URL-length limit even sooner than storeCode strings do. This is the
+ * query that produced the reported ~21,944-character URL: a report
+ * referencing hundreds of distinct stores puts all of their UUIDs into one
+ * `.in('store_id', [...])` filter.
+ */
 async function findExistingRecordKeys(storeIds, reportMonth) {
   if (!storeIds.length) return new Set();
 
-  const { data: existing, error } = await supabase
-    .from('sales_by_hour')
-    .select('store_id, report_month, hour')
-    .in('store_id', storeIds)
-    .eq('report_month', reportMonth);
-  if (error) throw error;
+  console.log('[sales-by-hour] lookup:', { table: 'sales_by_hour', column: 'store_id', filterCount: storeIds.length, batchSize: DEFAULT_BATCH_SIZE });
+  const existing = await runInBatches(storeIds, (batch) =>
+    supabase.from('sales_by_hour').select('store_id, report_month, hour').in('store_id', batch).eq('report_month', reportMonth),
+  );
 
   return new Set(existing.map((r) => recordKey(r.store_id, r.report_month, r.hour)));
 }

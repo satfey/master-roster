@@ -4,7 +4,8 @@ const ExcelJS = require('exceljs');
 // Explicit factory (not automock) so the real module — which creates a
 // Supabase client at require-time — is never loaded during tests.
 jest.mock('../../../repositories/storeMasterRepository', () => ({
-  findAreaCoachUsersByName: jest.fn(),
+  findAreaCoachesByName: jest.fn(),
+  createAreaCoaches: jest.fn(),
   findStoresByCodes: jest.fn(),
   createStores: jest.fn(),
   updateStores: jest.fn(),
@@ -50,12 +51,39 @@ function createFakeStoreTable(initial = []) {
   return byCode;
 }
 
-/** In-memory fake Area Coach lookup map, keyed by normalized full_name. */
-function fakeAreaCoachMap(entries) {
-  const map = new Map();
-  for (const [name, users] of entries) map.set(name, users);
-  repo.findAreaCoachUsersByName.mockResolvedValue(map);
-  return map;
+function normalizeName(name) {
+  return name.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+/**
+ * In-memory fake `area_coach` table, keyed by normalized name — mirrors
+ * createFakeStoreTable so a coach created on one commit is found (not
+ * recreated) on a later one. Grouped as an array per key (not a single
+ * value) because the real table has no unique constraint on `name`, so an
+ * "Ambiguous Area Coach" scenario (2+ existing rows, same name) must stay
+ * representable.
+ */
+function createFakeAreaCoachTable(initial = []) {
+  const groups = new Map();
+  for (const coach of initial) {
+    const key = normalizeName(coach.name);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(coach);
+  }
+
+  repo.findAreaCoachesByName.mockImplementation(async () => groups);
+
+  repo.createAreaCoaches.mockImplementation(async (names) => {
+    const created = names.map((name) => ({ id: crypto.randomUUID(), name }));
+    for (const coach of created) {
+      const key = normalizeName(coach.name);
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key).push(coach);
+    }
+    return created;
+  });
+
+  return groups;
 }
 
 async function buildWorkbook(rows) {
@@ -68,93 +96,154 @@ async function buildWorkbook(rows) {
 
 beforeEach(() => {
   jest.clearAllMocks();
-  repo.findAreaCoachUsersByName.mockResolvedValue(new Map());
+  createFakeAreaCoachTable([]);
 });
 
 describe('storeMasterImportService — Area Coach resolution', () => {
-  test('6. Zone Update is matched against users.full_name (case/whitespace normalized)', async () => {
+  test('existing Area Coach: Zone Update is matched against area_coach.name (case/whitespace normalized)', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([['alice area coach', [{ id: 'coach-1', full_name: 'Alice Area Coach' }]]]);
+    createFakeAreaCoachTable([{ id: 'coach-1', name: 'Alice Area Coach' }]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', '  Alice   Area Coach ']]);
 
     const preview = await previewStoreMasterImport(buffer);
 
     expect(preview.rows[0].status).toBe('valid');
     expect(preview.rows[0].resolvedAreaCoachId).toBe('coach-1');
+    expect(preview.rows[0].willCreateAreaCoach).toBe(false);
   });
 
-  test('7. the resolved Area Coach users.id is saved to store.area_coach_id on commit', async () => {
+  test('the resolved existing area_coach.id is saved to store.area_coach_id on commit, without creating a new one', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([['alice area coach', [{ id: 'coach-1', full_name: 'Alice Area Coach' }]]]);
+    createFakeAreaCoachTable([{ id: 'coach-1', name: 'Alice Area Coach' }]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Alice Area Coach']]);
 
     await commitStoreMasterImport(buffer);
 
+    expect(repo.createAreaCoaches).not.toHaveBeenCalled();
     const [newStores] = repo.createStores.mock.calls[0];
     expect(newStores[0].areaCoachId).toBe('coach-1');
   });
 
-  test('15. Area Coach not found is a non-blocking warning — the row is still valid, saved with no Area Coach', async () => {
+  test('new Area Coach: a name with no existing match is auto-created on commit, and the store uses the new id', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
-    const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Nobody Real']]);
+    createFakeAreaCoachTable([]); // no Area Coaches exist yet
+    const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Boriphan Ruensuwan']]);
 
     const preview = await previewStoreMasterImport(buffer);
-
     expect(preview.rows[0].status).toBe('valid');
-    expect(preview.rows[0].errors).toHaveLength(0);
-    expect(preview.rows[0].warnings.some((w) => w.includes('Area Coach') && w.includes('not found'))).toBe(true);
-    expect(preview.rows[0].resolvedAreaCoachId).toBeNull();
-    expect(preview.rows[0].action).toBe('CREATE');
+    expect(preview.rows[0].willCreateAreaCoach).toBe(true);
+    expect(preview.newAreaCoachCount).toBe(1);
+
+    const result = await commitStoreMasterImport(buffer);
+
+    expect(repo.createAreaCoaches).toHaveBeenCalledWith(['Boriphan Ruensuwan']);
+    expect(result.areaCoachesCreated).toHaveLength(1);
+    expect(result.areaCoachesCreated[0].name).toBe('Boriphan Ruensuwan');
+    expect(result.storesCreated[0].area_coach_id).toBe(result.areaCoachesCreated[0].id);
   });
 
-  test('a store is created with area_coach_id = NULL when its Area Coach is not found, and backfills on a later re-import once the coach exists', async () => {
-    const table = createFakeStoreTable([]);
-    fakeAreaCoachMap([]); // no Area Coaches exist yet
+  test('same coach, different casing/whitespace across rows: only ONE area_coach is created and shared by every row', async () => {
+    createFakeStoreTable([]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([
+      ['2026-07-01', 1001, 'Store A', 'Boriphan Ruensuwan'],
+      ['2026-07-01', 1002, 'Store B', '  BORIPHAN   RUENSUWAN  '],
+      ['2026-07-01', 1003, 'Store C', 'boriphan ruensuwan'],
+    ]);
+
+    const result = await commitStoreMasterImport(buffer);
+
+    expect(repo.createAreaCoaches).toHaveBeenCalledTimes(1);
+    expect(repo.createAreaCoaches.mock.calls[0][0]).toEqual(['Boriphan Ruensuwan']); // first-seen casing, deduped to one entry
+    expect(result.areaCoachesCreated).toHaveLength(1);
+    const sharedId = result.areaCoachesCreated[0].id;
+    expect(result.storesCreated.map((s) => s.area_coach_id)).toEqual([sharedId, sharedId, sharedId]);
+  });
+
+  test('repeated import does not create a duplicate Area Coach — the second commit reuses the one created by the first', async () => {
+    createFakeStoreTable([]);
+    const areaCoachTable = createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Boriphan Ruensuwan']]);
 
     const first = await commitStoreMasterImport(buffer);
-    expect(first.created).toBe(1);
-    expect(first.storesCreated[0].area_coach_id).toBeNull();
-
-    // The Area Coach gets added to `users` later.
-    fakeAreaCoachMap([['boriphan ruensuwan', [{ id: 'coach-9', full_name: 'Boriphan Ruensuwan' }]]]);
+    expect(first.areaCoachesCreated).toHaveLength(1);
+    const firstId = first.areaCoachesCreated[0].id;
 
     const second = await commitStoreMasterImport(buffer);
-    expect(second.updated).toBe(1);
-    expect(table.get('1001').area_coach_id).toBe('coach-9');
+
+    expect(repo.createAreaCoaches).toHaveBeenCalledTimes(1); // not called again on the second import
+    expect(second.areaCoachesCreated).toHaveLength(0);
+    expect(second.unchanged).toBe(1); // store already has this Area Coach from the first commit — nothing to write
+    expect([...areaCoachTable.values()].flat().filter((c) => normalizeName(c.name) === 'boriphan ruensuwan')).toHaveLength(1);
+    expect(firstId).toBeTruthy();
   });
 
-  test('16. an ambiguous Area Coach (multiple matches) is flagged and the row is invalid', async () => {
+  test('an ambiguous Area Coach (2+ existing rows already share the name) is flagged and the row is invalid, without creating anything', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([['alice area coach', [
-      { id: 'coach-1', full_name: 'Alice Area Coach' },
-      { id: 'coach-2', full_name: 'Alice Area Coach' },
-    ]]]);
+    createFakeAreaCoachTable([
+      { id: 'coach-1', name: 'Alice Area Coach' },
+      { id: 'coach-2', name: 'Alice Area Coach' },
+    ]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Alice Area Coach']]);
 
     const preview = await previewStoreMasterImport(buffer);
 
     expect(preview.rows[0].status).toBe('invalid');
     expect(preview.rows[0].errors).toContain('Ambiguous Area Coach');
+
+    const result = await commitStoreMasterImport(buffer);
+    expect(repo.createAreaCoaches).not.toHaveBeenCalled();
+    expect(result.created).toBe(0);
   });
 
-  test('blank Zone Update resolves to a NULL Area Coach without an error', async () => {
+  test('blank Zone Update resolves to a NULL Area Coach without an error, and never triggers a create', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', '']]);
 
     const preview = await previewStoreMasterImport(buffer);
-
     expect(preview.rows[0].status).toBe('valid');
     expect(preview.rows[0].resolvedAreaCoachId).toBeNull();
+    expect(preview.rows[0].willCreateAreaCoach).toBe(false);
+
+    await commitStoreMasterImport(buffer);
+    expect(repo.createAreaCoaches).not.toHaveBeenCalled();
+  });
+});
+
+describe('storeMasterImportService — API response: storeId is the business Store ID, not the UUID', () => {
+  test('Case 1 & 3: preview rows expose storeId as storeCode (string), never the store UUID', async () => {
+    createFakeStoreTable([]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([
+      ['2026-07-01', 1001, 'Bangna Store', ''],
+      ['2026-07-01', 1002, 'Siam Store', ''],
+    ]);
+
+    const preview = await previewStoreMasterImport(buffer);
+
+    expect(preview.rows.map((r) => r.storeId)).toEqual(['1001', '1002']);
+  });
+
+  test('storesCreated/storesUpdated include storeId (storeCode) alongside the entity id (UUID) — both available, clearly named', async () => {
+    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([
+      ['2026-07-01', 1001, 'New Name', ''],
+      ['2026-07-01', 1002, 'Siam Store', ''],
+    ]);
+
+    const result = await commitStoreMasterImport(buffer);
+
+    expect(result.storesUpdated[0]).toMatchObject({ id: 'uuid-1001', storeId: '1001' });
+    expect(result.storesCreated[0]).toMatchObject({ storeId: '1002', storeCode: '1002' });
   });
 });
 
 describe('storeMasterImportService — create vs update', () => {
   test('8. an existing Store is updated instead of duplicated', async () => {
     const table = createFakeStoreTable([{ id: 'store-1', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'New Name', '']]);
 
     const result = await commitStoreMasterImport(buffer);
@@ -167,7 +256,7 @@ describe('storeMasterImportService — create vs update', () => {
 
   test('9. a new Store is created when storeCode does not exist', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1002, 'Siam Store', '']]);
 
     const result = await commitStoreMasterImport(buffer);
@@ -179,7 +268,7 @@ describe('storeMasterImportService — create vs update', () => {
 
   test('a row that already matches the DB exactly resolves to NO_CHANGE and writes nothing', async () => {
     createFakeStoreTable([{ id: 'store-1', storeCode: '1001', name: 'Bangna Store', area_coach_id: null }]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', '']]);
 
     const result = await commitStoreMasterImport(buffer);
@@ -191,7 +280,7 @@ describe('storeMasterImportService — create vs update', () => {
 
   test('10. Effective Date is never included in the create/update payload', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', '']]);
 
     await commitStoreMasterImport(buffer);
@@ -205,7 +294,7 @@ describe('storeMasterImportService — create vs update', () => {
 describe('storeMasterImportService — duplicate Store IDs within one file', () => {
   test('13. duplicate Store IDs with matching data are written only once', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([
       ['2026-07-01', 1001, 'Bangna Store', ''],
       ['2026-07-01', 1001, 'Bangna Store', ''],
@@ -223,7 +312,7 @@ describe('storeMasterImportService — duplicate Store IDs within one file', () 
 
   test('14. conflicting duplicate Store IDs (different Branch) are marked invalid, not silently resolved', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
+    createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([
       ['2026-07-01', 1001, 'Bangna Store', ''],
       ['2026-07-01', 1001, 'Different Branch Name', ''],
@@ -244,7 +333,7 @@ describe('storeMasterImportService — duplicate Store IDs within one file', () 
 describe('storeMasterImportService — idempotency and safety', () => {
   test('17. re-importing the same file twice is idempotent (same end state, no duplicate writes)', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([['alice area coach', [{ id: 'coach-1', full_name: 'Alice Area Coach' }]]]);
+    createFakeAreaCoachTable([{ id: 'coach-1', name: 'Alice Area Coach' }]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Alice Area Coach']]);
 
     const first = await commitStoreMasterImport(buffer);
@@ -257,20 +346,21 @@ describe('storeMasterImportService — idempotency and safety', () => {
     expect(second.unchanged).toBe(1);
   });
 
-  test('18. preview never calls createStores or updateStores, even for a new Store', async () => {
+  test('18. preview never calls createStores, updateStores, or createAreaCoaches, even for a new Store with a new Area Coach', async () => {
     createFakeStoreTable([]);
-    fakeAreaCoachMap([]);
-    const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', '']]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', 'Boriphan Ruensuwan']]);
 
     await previewStoreMasterImport(buffer);
 
     expect(repo.createStores).not.toHaveBeenCalled();
     expect(repo.updateStores).not.toHaveBeenCalled();
+    expect(repo.createAreaCoaches).not.toHaveBeenCalled();
   });
 
   test('19. commit creates and updates exactly the right stores in one file', async () => {
     const table = createFakeStoreTable([{ id: 'store-1', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
-    fakeAreaCoachMap([['alice area coach', [{ id: 'coach-1', full_name: 'Alice Area Coach' }]]]);
+    createFakeAreaCoachTable([{ id: 'coach-1', name: 'Alice Area Coach' }]);
     const buffer = await buildWorkbook([
       ['2026-07-01', 1001, 'Bangna Store', 'Alice Area Coach'], // existing -> UPDATE
       ['2026-07-02', 1002, 'Siam Store', ''],                   // new -> CREATE

@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
 const { success, failure } = require('../utils/apiResponse');
 const { getAllowedStoreIds } = require('../middleware/storeScope');
+const { withDisplayStoreId } = require('../utils/storeDisplay');
 
 async function list(req, res) {
   const allowedStoreIds = getAllowedStoreIds(req.user);
@@ -8,20 +9,20 @@ async function list(req, res) {
   if (allowedStoreIds) query = query.in('id', allowedStoreIds);
   const { data: stores, error } = await query;
   if (error) throw error;
-  return success(res, stores);
+  return success(res, stores.map(withDisplayStoreId));
 }
 
 async function getOne(req, res) {
   const { id } = req.params;
   const { data: store, error } = await supabase
     .from('store')
-    .select('*, employee(*), labor_guideline(*), area_coach:users!fk_store_area_coach(*)')
+    .select('*, employee(*), labor_guideline(*), area_coach:area_coach!fk_store_area_coach(*)')
     .eq('employee.is_active', true)
     .eq('id', id)
     .maybeSingle();
   if (error) throw error;
   if (!store) return failure(res, 'Store not found', 404);
-  return success(res, store);
+  return success(res, withDisplayStoreId(store));
 }
 
 async function create(req, res) {
@@ -32,7 +33,7 @@ async function create(req, res) {
     .select()
     .single();
   if (error) throw error;
-  return success(res, store, 'Store created', 201);
+  return success(res, withDisplayStoreId(store), 'Store created', 201);
 }
 
 async function update(req, res) {
@@ -45,7 +46,7 @@ async function update(req, res) {
     .select()
     .single();
   if (error) throw error;
-  return success(res, store, 'Store updated');
+  return success(res, withDisplayStoreId(store), 'Store updated');
 }
 
 async function upsertGuideline(req, res) {

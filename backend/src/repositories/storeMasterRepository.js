@@ -1,44 +1,39 @@
 const supabase = require('../config/supabase');
 
-function normalizeRoleName(name) {
-  return String(name || '').trim().toLowerCase().replace(/[_\s]+/g, ' ');
-}
-
 /**
- * Determines which `role` rows represent the Area Coach role by inspecting
- * role.name rather than assuming one exact spelling/casing — the live role
- * table has both "AREA_COACH" and "Area Coach" rows, and both must count.
+ * All `area_coach` rows, keyed by normalized name for matching against the
+ * Excel "Zone Update" column. store.area_coach_id is a foreign key straight
+ * to area_coach.id (constraint fk_store_area_coach) — Area Coaches are their
+ * own entity here, not a role on `users`. A name matching more than one row
+ * is intentionally left as an array — the caller decides how to handle
+ * ambiguity.
  */
-async function findAreaCoachRoleIds() {
-  const { data: roles, error } = await supabase.from('role').select('id, name');
-  if (error) throw error;
-  return roles.filter((r) => normalizeRoleName(r.name) === 'area coach').map((r) => r.id);
-}
-
-/**
- * Active users holding an Area Coach role, keyed by normalized full_name for
- * matching against the Excel "Zone Update" column. A name matching more than
- * one user is intentionally left as an array here — the caller decides how
- * to handle ambiguity.
- */
-async function findAreaCoachUsersByName() {
-  const roleIds = await findAreaCoachRoleIds();
-  if (!roleIds.length) return new Map();
-
-  const { data: users, error } = await supabase
-    .from('users')
-    .select('id, full_name, role_id, is_active')
-    .in('role_id', roleIds)
-    .eq('is_active', true);
+async function findAreaCoachesByName() {
+  const { data: areaCoaches, error } = await supabase.from('area_coach').select('id, name');
   if (error) throw error;
 
   const byName = new Map();
-  for (const user of users) {
-    const key = String(user.full_name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  for (const coach of areaCoaches) {
+    const key = String(coach.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
     if (!byName.has(key)) byName.set(key, []);
-    byName.get(key).push(user);
+    byName.get(key).push(coach);
   }
   return byName;
+}
+
+/**
+ * Auto-creates area_coach rows referenced by the Store Master file but not
+ * yet in `area_coach`. The Excel file is the only source of truth for Area
+ * Coach names — none are ever hard-coded here. `names` must already be
+ * de-duplicated by normalized name by the caller — this does one bulk
+ * insert, not one per row, so a name repeated across many rows in the same
+ * file only ever creates a single area_coach.
+ */
+async function createAreaCoaches(names) {
+  if (!names.length) return [];
+  const { data, error } = await supabase.from('area_coach').insert(names.map((name) => ({ name }))).select();
+  if (error) throw error;
+  return data;
 }
 
 /** Looks up stores by the report's "ID" column, matched against store.storeCode (VARCHAR). */
@@ -80,4 +75,4 @@ async function updateStores(updates) {
   return results;
 }
 
-module.exports = { findAreaCoachUsersByName, findStoresByCodes, createStores, updateStores };
+module.exports = { findAreaCoachesByName, createAreaCoaches, findStoresByCodes, createStores, updateStores };

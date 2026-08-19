@@ -62,6 +62,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                                   rowNumber: { type: integer }
  *                                   status: { type: string, enum: [valid, invalid, duplicate] }
  *                                   errors: { type: array, items: { type: string } }
+ *                                   storeId: { type: integer, nullable: true, example: 1001, description: 'Business Store ID (same as reportStoreId) — not the store UUID.' }
+ *                                   storeUuid: { type: string, format: uuid, nullable: true, description: 'Internal store.id — null when the store does not exist yet (willCreateStore: true).' }
  *                                   willCreateStore: { type: boolean, description: 'True if this row''s Store ID has no matching store yet and would be auto-created on commit.' }
  *             example:
  *               success: true
@@ -78,7 +80,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                     errors: []
  *                     willCreateStore: false
  *                     reportStoreId: 1001
- *                     storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                     storeId: 1001
+ *                     storeUuid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
  *                     storeBuId: 5
  *                     storeName: Bangna Store
  *                     week: '2026-27'
@@ -91,7 +94,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                     errors: []
  *                     willCreateStore: true
  *                     reportStoreId: 2002
- *                     storeId: null
+ *                     storeId: 2002
+ *                     storeUuid: null
  *                     storeBuId: 6
  *                     storeName: New Store B
  *                     week: '2026-27'
@@ -155,6 +159,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                             type: object
  *                             properties:
  *                               id: { type: string, format: uuid }
+ *                               storeId: { type: string, example: '2002', description: 'Business Store ID (same as storeCode).' }
  *                               storeCode: { type: string, example: '2002' }
  *                               name: { type: string, nullable: true, example: 'New Store B' }
  *                         failed:
@@ -174,6 +179,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 skippedDuplicates: 0
  *                 storesCreated:
  *                   - id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb999
+ *                     storeId: '2002'
  *                     storeCode: '2002'
  *                     name: New Store B
  *                 failed:

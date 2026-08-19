@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const { getAllowedStoreIds } = require('../middleware/storeScope');
+const { withDisplayStoreId } = require('../utils/storeDisplay');
 
 /**
  * Builds the productivity dashboard payload for a single store: sales
@@ -11,7 +12,14 @@ const { getAllowedStoreIds } = require('../middleware/storeScope');
  * write daily KpiSnapshot rows from this same calculation if you want cached
  * historical snapshots later.
  */
-async function getStoreProductivity({ storeId, from, to }) {
+/**
+ * `storeCode` is optional — pass it when the caller already has the store
+ * row (e.g. getCompanyDashboard, which lists stores itself) to skip an extra
+ * lookup; omit it (e.g. the single-store dashboard, called with just a UUID
+ * path param) and it's fetched here. Either way the response's `storeId` is
+ * the business-facing store.storeCode, not the internal UUID.
+ */
+async function getStoreProductivity({ storeId, storeCode, from, to }) {
   let salesQuery = supabase.from('sales_record').select('*').eq('store_id', storeId).order('sales_date', { ascending: true });
   let forecastQuery = supabase
     .from('sales_forecast')
@@ -30,17 +38,28 @@ async function getStoreProductivity({ storeId, from, to }) {
     shiftQuery = shiftQuery.lte('shift_date', to);
   }
 
-  const [{ data: salesRecords, error: salesError }, { data: forecasts, error: forecastError }, { data: shifts, error: shiftsError }, { data: guideline, error: guidelineError }] =
-    await Promise.all([
-      salesQuery,
-      forecastQuery,
-      shiftQuery,
-      supabase.from('labor_guideline').select('*').eq('store_id', storeId).limit(1).maybeSingle(), // assumes one active guideline per store
-    ]);
+  const storeCodeQuery = storeCode !== undefined
+    ? Promise.resolve({ data: { storeCode }, error: null })
+    : supabase.from('store').select('storeCode').eq('id', storeId).maybeSingle();
+
+  const [
+    { data: salesRecords, error: salesError },
+    { data: forecasts, error: forecastError },
+    { data: shifts, error: shiftsError },
+    { data: guideline, error: guidelineError },
+    { data: storeRow, error: storeError },
+  ] = await Promise.all([
+    salesQuery,
+    forecastQuery,
+    shiftQuery,
+    supabase.from('labor_guideline').select('*').eq('store_id', storeId).limit(1).maybeSingle(), // assumes one active guideline per store
+    storeCodeQuery,
+  ]);
   if (salesError) throw salesError;
   if (forecastError) throw forecastError;
   if (shiftsError) throw shiftsError;
   if (guidelineError) throw guidelineError;
+  if (storeError) throw storeError;
 
   const salesActual = salesRecords.reduce((s, r) => s + Number(r.amount), 0);
   const forecastTotal = forecasts.reduce((s, r) => s + Number(r.forecasted_sales), 0);
@@ -54,7 +73,8 @@ async function getStoreProductivity({ storeId, from, to }) {
   const productivity = actualHours > 0 ? Math.round((salesActual / actualHours) * 100) / 100 : 0;
 
   return {
-    storeId,
+    storeId: storeRow?.storeCode ?? null, // business-facing Store ID (e.g. "1001") — not the internal UUID
+    storeUuid: storeId,
     salesActual: Math.round(salesActual),
     forecastSales: Math.round(forecastTotal),
     plannedHours: Math.round(plannedHours * 100) / 100,
@@ -80,8 +100,8 @@ async function getCompanyDashboard(user) {
 
   const results = await Promise.all(
     stores.map(async (store) => {
-      const productivity = await getStoreProductivity({ storeId: store.id });
-      return { store, ...productivity };
+      const productivity = await getStoreProductivity({ storeId: store.id, storeCode: store.storeCode });
+      return { store: withDisplayStoreId(store), ...productivity };
     })
   );
 

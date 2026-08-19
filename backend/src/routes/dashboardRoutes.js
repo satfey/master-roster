@@ -29,7 +29,8 @@ const authorize = require('../middleware/authorize');
  *                             type: object
  *                             properties:
  *                               store: { $ref: '#/components/schemas/Store' }
- *                               storeId: { type: string, format: uuid }
+ *                               storeId: { type: string, example: '1001', description: 'Business Store ID (store.storeCode) — not the UUID.' }
+ *                               storeUuid: { type: string, format: uuid, description: 'Internal store.id, for callers that need it (e.g. PUT /store/{id}).' }
  *                               salesActual: { type: number }
  *                               forecastSales: { type: number }
  *                               plannedHours: { type: number }
@@ -49,8 +50,9 @@ const authorize = require('../middleware/authorize');
  *               message: OK
  *               data:
  *                 stores:
- *                   - store: { id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1, name: Bangna Store, region: Bangkok, area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002 }
- *                     storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                   - store: { id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1, storeId: '1001', name: Bangna Store, region: Bangkok, area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002 }
+ *                     storeId: '1001'
+ *                     storeUuid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
  *                     salesActual: 30200
  *                     forecastSales: 32000
  *                     plannedHours: 16
@@ -59,8 +61,8 @@ const authorize = require('../middleware/authorize');
  *                     remainingHours: 11.5
  *                     laborPercent: 57.41
  *                     productivity: 1948.39
- *                 topPerformingStore: { storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1, productivity: 1948.39 }
- *                 worstPerformingStore: { storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2, productivity: 0 }
+ *                 topPerformingStore: { storeId: '1001', productivity: 1948.39 }
+ *                 worstPerformingStore: { storeId: '1002', productivity: 0 }
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  *       403:
@@ -100,7 +102,8 @@ const authorize = require('../middleware/authorize');
  *                     data:
  *                       type: object
  *                       properties:
- *                         storeId: { type: string, format: uuid }
+ *                         storeId: { type: string, example: '1001', description: 'Business Store ID (store.storeCode) — not the UUID.' }
+ *                         storeUuid: { type: string, format: uuid }
  *                         salesActual: { type: number }
  *                         forecastSales: { type: number }
  *                         plannedHours: { type: number }
@@ -122,7 +125,8 @@ const authorize = require('../middleware/authorize');
  *               success: true
  *               message: OK
  *               data:
- *                 storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 storeId: '1001'
+ *                 storeUuid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
  *                 salesActual: 30200
  *                 forecastSales: 32000
  *                 plannedHours: 16

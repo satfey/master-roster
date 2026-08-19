@@ -147,6 +147,43 @@ describe('salesByHourImportService — duplicate handling', () => {
   });
 });
 
+describe('salesByHourImportService — API response: storeId is the business Store ID, not the UUID', () => {
+  test('Case 2: preview row storeId equals the Excel Store Id (1001), and the UUID is only available under storeUuid', async () => {
+    createFakeStoreTable([{ id: 'baf9e13d-fd30-45c2-8ed3-000000000001', storeCode: '1001', name: 'ABC Central' }]);
+    const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 1150, 1]]);
+
+    const preview = await previewSalesByHourImport(buffer, MONTH);
+
+    expect(preview.rows[0].storeId).toBe(1001);
+    expect(preview.rows[0].storeUuid).toBe('baf9e13d-fd30-45c2-8ed3-000000000001');
+    expect(preview.rows[0].storeId).not.toBe(preview.rows[0].storeUuid);
+  });
+
+  test('Case 3: multiple stores in one file each report their own numeric storeId', async () => {
+    createFakeStoreTable([]);
+    const buffer = await buildWorkbook([
+      ['ABC', 1001, 'ABC Central', 1150, 1],
+      ['XYZ', 1002, 'XYZ North', 900, 1],
+      ['DEF', 1003, 'DEF South', 700, 1],
+    ]);
+
+    const preview = await previewSalesByHourImport(buffer, MONTH);
+
+    expect(preview.rows.map((r) => r.storeId)).toEqual([1001, 1002, 1003]);
+  });
+
+  test('Case 4: the database write still uses the internal UUID (store_id), unaffected by the response-facing storeId rename', async () => {
+    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'ABC Central' }]);
+    const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 1150, 1]]);
+
+    await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
+
+    const [records] = repo.insertRecords.mock.calls[0];
+    expect(records[0].store_id).toBe('uuid-1001');
+    expect(records[0].report_store_id).toBe(1001);
+  });
+});
+
 describe('salesByHourImportService — preview never writes to the DB', () => {
   test('17. preview does not call createStores or insertRecords, even for an unknown Store ID', async () => {
     createFakeStoreTable([]);

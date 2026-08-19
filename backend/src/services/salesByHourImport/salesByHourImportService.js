@@ -78,7 +78,8 @@ async function evaluateRows(buffer, reportMonth, createMissingStores) {
       status,
       errors,
       reportStoreId: row.reportStoreId,
-      storeId: store?.id || null,
+      storeId: row.reportStoreId, // business-facing Store ID (e.g. 1001), same value as reportStoreId — not the internal UUID
+      storeUuid: store?.id || null,
       willCreateStore: Boolean(store?.pending),
       brandName: row.brandName,
       storeName: row.storeName,
@@ -112,7 +113,7 @@ async function commitSalesByHourImport(buffer, reportMonth, userId) {
 
   const sourceType = await repo.getSalesByHourSourceType();
   const records = validRows.map((r) => ({
-    store_id: r.storeId,
+    store_id: r.storeUuid,
     report_store_id: r.reportStoreId,
     brand_name: r.brandName,
     store_name: r.storeName,
@@ -130,7 +131,7 @@ async function commitSalesByHourImport(buffer, reportMonth, userId) {
     imported,
     skippedDuplicates: rows.filter((r) => r.status === 'duplicate').length,
     failed: rows.filter((r) => r.status === 'invalid').map((r) => ({ rowNumber: r.rowNumber, reportStoreId: r.reportStoreId, errors: r.errors })),
-    storesCreated: createdStores.map((s) => ({ id: s.id, storeCode: s.storeCode, name: s.name })),
+    storesCreated: createdStores.map((s) => ({ id: s.id, storeId: s.storeCode, storeCode: s.storeCode, name: s.name })),
   };
 }
 

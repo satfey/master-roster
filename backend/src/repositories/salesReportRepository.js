@@ -1,15 +1,21 @@
 const supabase = require('../config/supabase');
+const { runInBatches } = require('../utils/batchQuery');
 
 function recordKey(storeId, date) {
   const iso = date instanceof Date ? date.toISOString().slice(0, 10) : String(date).slice(0, 10);
   return `${storeId}|${iso}`;
 }
 
-/** Looks up stores by the report's "Store Id" column (integer in Excel), matched against store.storeCode (VARCHAR(4)). */
+/**
+ * Looks up stores by the report's "Store Id" column (integer in Excel),
+ * matched against store.storeCode (VARCHAR(4)). Batched — a full report can
+ * reference hundreds/thousands of distinct stores, and a single
+ * `.in('storeCode', codes)` request would otherwise build a request URL long
+ * enough to exceed PostgREST's ~16KB header limit (UND_ERR_HEADERS_OVERFLOW).
+ */
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
-  const { data: stores, error } = await supabase.from('store').select('*').in('storeCode', codes);
-  if (error) throw error;
+  const stores = await runInBatches(codes, (batch) => supabase.from('store').select('*').in('storeCode', batch));
   return new Map(stores.map((s) => [s.storeCode, s]));
 }
 
@@ -39,7 +45,12 @@ async function getSalesReportSourceType() {
   return sourceType;
 }
 
-/** Returns a Set of "storeId|YYYY-MM-DD" keys already present in sales_report, for duplicate detection. */
+/**
+ * Returns a Set of "storeId|YYYY-MM-DD" keys already present in
+ * sales_report, for duplicate detection. Batched — see findStoresByCodes
+ * above; the store_id list here is a list of UUIDs (36 chars each), which
+ * hits the same URL-length limit even sooner than storeCode strings do.
+ */
 async function findExistingReportKeys(storeIds, dates) {
   if (!storeIds.length || !dates.length) return new Set();
 
@@ -47,13 +58,14 @@ async function findExistingReportKeys(storeIds, dates) {
   const fromDate = new Date(Math.min(...timestamps)).toISOString().slice(0, 10);
   const toDate = new Date(Math.max(...timestamps)).toISOString().slice(0, 10);
 
-  const { data: existing, error } = await supabase
-    .from('sales_report')
-    .select('store_id, report_date')
-    .in('store_id', storeIds)
-    .gte('report_date', fromDate)
-    .lte('report_date', toDate);
-  if (error) throw error;
+  const existing = await runInBatches(storeIds, (batch) =>
+    supabase
+      .from('sales_report')
+      .select('store_id, report_date')
+      .in('store_id', batch)
+      .gte('report_date', fromDate)
+      .lte('report_date', toDate),
+  );
 
   return new Set(existing.map((r) => recordKey(r.store_id, r.report_date)));
 }

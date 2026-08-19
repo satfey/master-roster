@@ -29,6 +29,7 @@ const { storeScope } = require('../middleware/storeScope');
  *               message: OK
  *               data:
  *                 - id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                   storeId: '1001'
  *                   name: Bangna Store
  *                   region: Bangkok
  *                   area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
