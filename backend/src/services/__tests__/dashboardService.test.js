@@ -1,5 +1,5 @@
 // Mocks only the Supabase client (not the service) so the real
-// storeId/storeUuid mapping logic in dashboardService.js runs end-to-end.
+// storeId mapping logic in dashboardService.js runs end-to-end.
 let mockFromImpl;
 jest.mock('../../config/supabase', () => ({ from: (...args) => mockFromImpl(...args) }));
 
@@ -49,35 +49,31 @@ beforeEach(() => {
   mockFromImpl = undefined;
 });
 
-describe('dashboardService — storeId is the business Store ID, not the UUID', () => {
-  test('getStoreProductivity looks up storeCode itself when not given one, and splits storeId/storeUuid', async () => {
-    const { from } = createFakeFrom({
-      sales_record: [], sales_forecast: [], shift: [], labor_guideline: [],
-      store: [{ id: 'baf9e13d-fd30-45c2-8ed3-000000000001', storeCode: '1001' }],
-    });
-    mockFromImpl = from;
-
-    const result = await getStoreProductivity({ storeId: 'baf9e13d-fd30-45c2-8ed3-000000000001' });
-
-    expect(result.storeId).toBe('1001');
-    expect(result.storeUuid).toBe('baf9e13d-fd30-45c2-8ed3-000000000001');
-  });
-
-  test('getStoreProductivity skips the extra lookup when the caller already supplies storeCode', async () => {
+describe('dashboardService — storeId is store.id, the canonical Store ID (not a UUID)', () => {
+  test('getStoreProductivity returns the storeId it was given directly — store.id IS the canonical id, no extra lookup needed', async () => {
     const { from, calls } = createFakeFrom({ sales_record: [], sales_forecast: [], shift: [], labor_guideline: [] });
     mockFromImpl = from;
 
-    const result = await getStoreProductivity({ storeId: 'uuid-1', storeCode: '1001' });
+    const result = await getStoreProductivity({ storeId: '1001' });
 
     expect(result.storeId).toBe('1001');
-    expect(calls.some((c) => c.table === 'store')).toBe(false); // no store table query needed
+    expect(calls.some((c) => c.table === 'store')).toBe(false); // no extra store lookup — the id passed in already is the canonical one
   });
 
-  test('Case 3: getCompanyDashboard lists multiple stores, each with its own numeric-looking storeId, never a raw UUID', async () => {
+  test('7. API returns storeId as the source Store ID string, not a UUID', async () => {
+    const { from } = createFakeFrom({ sales_record: [], sales_forecast: [], shift: [], labor_guideline: [] });
+    mockFromImpl = from;
+
+    const result = await getStoreProductivity({ storeId: '1001' });
+
+    expect(result.storeId).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/i);
+  });
+
+  test('Case 3: getCompanyDashboard lists multiple stores, each with its own storeId', async () => {
     const stores = [
-      { id: 'uuid-1', storeCode: '1001', name: 'A', region: null, area_coach_id: null },
-      { id: 'uuid-2', storeCode: '1002', name: 'B', region: null, area_coach_id: null },
-      { id: 'uuid-3', storeCode: '1003', name: 'C', region: null, area_coach_id: null },
+      { id: '1001', storeCode: '1001', name: 'A', region: null, area_coach_id: null },
+      { id: '1002', storeCode: '1002', name: 'B', region: null, area_coach_id: null },
+      { id: '1003', storeCode: '1003', name: 'C', region: null, area_coach_id: null },
     ];
     const { from } = createFakeFrom({ store: stores, sales_record: [], sales_forecast: [], shift: [], labor_guideline: [] });
     mockFromImpl = from;
@@ -85,7 +81,7 @@ describe('dashboardService — storeId is the business Store ID, not the UUID', 
     const result = await getCompanyDashboard({ role: 'ADMIN' });
 
     expect(result.stores.map((r) => r.storeId)).toEqual(['1001', '1002', '1003']);
-    expect(result.stores.every((r) => r.storeId !== r.storeUuid)).toBe(true);
     expect(result.stores.map((r) => r.store.storeId)).toEqual(['1001', '1002', '1003']); // embedded store entity also enriched
+    expect(result.stores.map((r) => r.store.id)).toEqual(['1001', '1002', '1003']);
   });
 });

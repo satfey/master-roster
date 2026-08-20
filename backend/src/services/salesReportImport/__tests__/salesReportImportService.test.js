@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const ExcelJS = require('exceljs');
 
 // Explicit factory (not automock) so the real module — which creates a
@@ -15,23 +14,27 @@ const repo = require('../../../repositories/salesReportRepository');
 
 const { previewSalesReportImport, commitSalesReportImport } = require('../salesReportImportService');
 
-/** In-memory fake `store` table keyed by storeCode — lets tests prove that a store created on one commit is found (not recreated) on a later one. */
+/**
+ * In-memory fake `store` table keyed by id — the Excel Store ID IS store.id
+ * now, so a store created on one commit is found (not recreated) on a
+ * later one just by matching that same id, no separate UUID involved.
+ */
 function createFakeStoreTable(initial = []) {
-  const byCode = new Map(initial.map((s) => [s.storeCode, s]));
+  const byId = new Map(initial.map((s) => [s.id, s]));
 
   repo.findStoresByCodes.mockImplementation(async (codes) => {
     const map = new Map();
-    for (const code of codes) if (byCode.has(code)) map.set(code, byCode.get(code));
+    for (const code of codes) if (byId.has(code)) map.set(code, byId.get(code));
     return map;
   });
 
   repo.createStores.mockImplementation(async (newStores) => {
-    const created = newStores.map((s) => ({ id: crypto.randomUUID(), storeCode: s.storeCode, name: s.name, region: null, area_coach_id: null }));
-    for (const store of created) byCode.set(store.storeCode, store);
+    const created = newStores.map((s) => ({ id: s.storeCode, storeCode: s.storeCode, name: s.name, region: null, area_coach_id: null }));
+    for (const store of created) byId.set(store.id, store);
     return created;
   });
 
-  return byCode;
+  return byId;
 }
 
 async function buildWorkbook(rows) {
@@ -55,8 +58,8 @@ beforeEach(() => {
 
 describe('salesReportImportService — dedup (unrelated to store creation)', () => {
   test('preview classifies rows as valid / duplicate (DB + in-file), using an already-existing store', async () => {
-    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'A1001-A' }]);
-    repo.findExistingReportKeys.mockResolvedValue(new Set(['uuid-1001|2026-07-01']));
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'A1001-A' }]);
+    repo.findExistingReportKeys.mockResolvedValue(new Set(['1001|2026-07-01']));
 
     const buffer = await buildWorkbook([
       [30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500], // duplicates existing DB record
@@ -82,11 +85,24 @@ describe('salesReportImportService — dedup (unrelated to store creation)', () 
     expect(preview.invalidRows).toBe(1);
     expect(preview.rows[0].errors).toEqual(expect.arrayContaining([expect.stringContaining('Store ID'), expect.stringContaining('Date')]));
   });
+
+  test('9. a missing Store ID never generates a placeholder id and the row is not inserted', async () => {
+    createFakeStoreTable([]);
+    const buffer = await buildWorkbook([[30001, null, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+
+    const preview = await previewSalesReportImport(buffer);
+    expect(preview.rows[0].storeId).toBeNull();
+
+    const result = await commitSalesReportImport(buffer, 'uuid-user-1');
+    expect(result.imported).toBe(0);
+    expect(result.failed).toHaveLength(1);
+    expect(repo.insertRecords).toHaveBeenCalledWith([]);
+  });
 });
 
-describe('salesReportImportService — store auto-creation on commit', () => {
+describe('salesReportImportService — the Excel Store ID becomes store.id directly (no random UUID)', () => {
   test('1. an existing Store ID uses the existing store.id (no creation)', async () => {
-    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'Existing Name' }]);
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Existing Name' }]);
     const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
 
     const result = await commitSalesReportImport(buffer, 'uuid-user-1');
@@ -94,18 +110,19 @@ describe('salesReportImportService — store auto-creation on commit', () => {
     expect(repo.createStores).not.toHaveBeenCalled();
     expect(result.storesCreated).toEqual([]);
     const [records] = repo.insertRecords.mock.calls[0];
-    expect(records[0].store_id).toBe('uuid-1001');
+    expect(records[0].store_id).toBe('1001');
   });
 
-  test('2. an unknown Store ID automatically creates a store', async () => {
+  test('2. Store ID 1001 results in store.id = "1001" — no random UUID is generated', async () => {
     createFakeStoreTable([]);
     const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
 
     const result = await commitSalesReportImport(buffer, 'uuid-user-1');
 
     expect(repo.createStores).toHaveBeenCalledTimes(1);
+    expect(repo.createStores.mock.calls[0][0]).toEqual([{ storeCode: '1001', name: 'A1001-A' }]);
     expect(result.storesCreated).toHaveLength(1);
-    expect(result.storesCreated[0]).toMatchObject({ storeCode: '1001', name: 'A1001-A' });
+    expect(result.storesCreated[0].id).toBe('1001');
     expect(result.imported).toBe(1);
     expect(result.failed).toHaveLength(0);
   });
@@ -121,16 +138,15 @@ describe('salesReportImportService — store auto-creation on commit', () => {
     const result = await commitSalesReportImport(buffer, 'uuid-user-1');
 
     expect(repo.createStores).toHaveBeenCalledTimes(1);
-    expect(repo.createStores.mock.calls[0][0]).toEqual([{ storeCode: '1001', name: 'A1001-A' }]);
     expect(result.storesCreated).toHaveLength(1);
     expect(result.imported).toBe(3);
 
     const [records] = repo.insertRecords.mock.calls[0];
-    expect(new Set(records.map((r) => r.store_id)).size).toBe(1); // all 3 rows reuse the same generated UUID
+    expect(new Set(records.map((r) => r.store_id))).toEqual(new Set(['1001'])); // all 3 rows reference the same store.id
   });
 
-  test('4. multiple different Stores in one workbook are all resolved/created correctly', async () => {
-    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'Existing A' }]);
+  test('4. multiple different Stores (2002 vs 1001) create separate rows, never colliding', async () => {
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Existing A' }]);
     const buffer = await buildWorkbook([
       [30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500], // existing
       [30002, 2002, 'B2002-B', '2026-27', new Date(Date.UTC(2026, 6, 1)), 8000, 7500], // new
@@ -141,26 +157,38 @@ describe('salesReportImportService — store auto-creation on commit', () => {
 
     expect(result.imported).toBe(3);
     expect(result.storesCreated).toHaveLength(2);
-    expect(new Set(result.storesCreated.map((s) => s.storeCode))).toEqual(new Set(['2002', '3003']));
+    expect(new Set(result.storesCreated.map((s) => s.id))).toEqual(new Set(['2002', '3003']));
 
     const [records] = repo.insertRecords.mock.calls[0];
     const idFor = (code) => records.find((r) => r.report_store_id === code).store_id;
-    expect(idFor(1001)).toBe('uuid-1001');
-    expect(idFor(2002)).not.toBe(idFor(1001));
-    expect(idFor(3003)).not.toBe(idFor(1001));
-    expect(idFor(2002)).not.toBe(idFor(3003));
+    expect(idFor(1001)).toBe('1001');
+    expect(idFor(2002)).toBe('2002');
+    expect(idFor(3003)).toBe('3003');
   });
 
-  test('5 & 6. sales_report.store_id is the generated UUID; report_store_id keeps the original integer', async () => {
+  test('5. sales_report.store_id is store.id (the source Store ID, as a string) — never a UUID', async () => {
     createFakeStoreTable([]);
     const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
 
     const result = await commitSalesReportImport(buffer, 'uuid-user-1');
     const [records] = repo.insertRecords.mock.calls[0];
 
-    expect(records[0].report_store_id).toBe(1001);
+    expect(records[0].report_store_id).toBe(1001); // integer column, unchanged
+    expect(records[0].store_id).toBe('1001'); // FK — the string Store ID, IS store.id
     expect(records[0].store_id).toBe(result.storesCreated[0].id);
-    expect(records[0].store_id).not.toBe(1001);
+  });
+
+  test('10. leading-zero Store IDs are preserved end to end (text cell, never round-tripped through Number())', async () => {
+    createFakeStoreTable([]);
+    const buffer = await buildWorkbook([[30001, '001093', 'Leading Zero Store', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+
+    const preview = await previewSalesReportImport(buffer);
+    expect(preview.rows[0].storeId).toBe('001093');
+
+    const result = await commitSalesReportImport(buffer, 'uuid-user-1');
+    expect(result.storesCreated[0].id).toBe('001093');
+    const [records] = repo.insertRecords.mock.calls[0];
+    expect(records[0].store_id).toBe('001093');
   });
 
   test('7. the auto-created store uses the Store Name from Excel', async () => {
@@ -172,12 +200,13 @@ describe('salesReportImportService — store auto-creation on commit', () => {
     expect(result.storesCreated[0].name).toBe('My Excel Store Name');
   });
 
-  test('8. re-importing the same Store ID in a later commit does not create a duplicate store', async () => {
+  test('3 (upsert). re-importing Store ID 1001 in a later commit updates the same row instead of creating a new one', async () => {
     createFakeStoreTable([]);
 
     const buffer1 = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
     const firstResult = await commitSalesReportImport(buffer1, 'uuid-user-1');
     expect(firstResult.storesCreated).toHaveLength(1);
+    expect(firstResult.storesCreated[0].id).toBe('1001');
 
     const buffer2 = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 2)), 11000, 9500]]);
     const secondResult = await commitSalesReportImport(buffer2, 'uuid-user-1');
@@ -185,7 +214,7 @@ describe('salesReportImportService — store auto-creation on commit', () => {
     expect(secondResult.storesCreated).toHaveLength(0); // already exists — not recreated
     expect(repo.createStores).toHaveBeenCalledTimes(1); // called once total, across both imports
     const [, recordsSecond] = repo.insertRecords.mock.calls.map((c) => c[0]);
-    expect(recordsSecond[0].store_id).toBe(firstResult.storesCreated[0].id); // same store reused
+    expect(recordsSecond[0].store_id).toBe('1001'); // same store.id reused, still no UUID anywhere
   });
 
   test('a store-creation failure aborts the commit before any sales_report rows are inserted', async () => {
@@ -198,19 +227,18 @@ describe('salesReportImportService — store auto-creation on commit', () => {
   });
 });
 
-describe('salesReportImportService — API response: storeId is the business Store ID, not the UUID', () => {
-  test('Case 2: preview row storeId equals report_store_id (1001), and the UUID is only available under storeUuid', async () => {
-    createFakeStoreTable([{ id: 'baf9e13d-fd30-45c2-8ed3-000000000001', storeCode: '1001', name: 'A1001-A' }]);
+describe('salesReportImportService — API response: storeId is store.id, the canonical Store ID', () => {
+  test('7. API returns storeId as the source Store ID string, not a UUID', async () => {
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'A1001-A' }]);
     const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
 
     const preview = await previewSalesReportImport(buffer);
 
-    expect(preview.rows[0].storeId).toBe(1001);
-    expect(preview.rows[0].storeUuid).toBe('baf9e13d-fd30-45c2-8ed3-000000000001');
-    expect(preview.rows[0].storeId).not.toBe(preview.rows[0].storeUuid);
+    expect(preview.rows[0].storeId).toBe('1001');
+    expect(preview.rows[0].storeId).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/i); // not UUID-shaped
   });
 
-  test('Case 3: multiple stores in one file each report their own numeric storeId', async () => {
+  test('multiple stores in one file each report their own storeId', async () => {
     createFakeStoreTable([]);
     const buffer = await buildWorkbook([
       [30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500],
@@ -220,18 +248,7 @@ describe('salesReportImportService — API response: storeId is the business Sto
 
     const preview = await previewSalesReportImport(buffer);
 
-    expect(preview.rows.map((r) => r.storeId)).toEqual([1001, 1002, 1003]);
-  });
-
-  test('Case 4: the database write still uses the internal UUID (store_id), unaffected by the response-facing storeId rename', async () => {
-    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'A1001-A' }]);
-    const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
-
-    await commitSalesReportImport(buffer, 'uuid-user-1');
-
-    const [records] = repo.insertRecords.mock.calls[0];
-    expect(records[0].store_id).toBe('uuid-1001'); // FK relationship still UUID-based
-    expect(records[0].report_store_id).toBe(1001); // business id preserved separately, as before
+    expect(preview.rows.map((r) => r.storeId)).toEqual(['1001', '1002', '1003']);
   });
 });
 
@@ -249,7 +266,7 @@ describe('salesReportImportService — preview never writes to the DB', () => {
   });
 
   test('preview does not flag an already-existing store as willCreateStore', async () => {
-    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'Existing' }]);
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Existing' }]);
     const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
 
     const preview = await previewSalesReportImport(buffer);

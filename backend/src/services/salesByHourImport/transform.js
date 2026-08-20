@@ -1,4 +1,4 @@
-const { parseNumber } = require('../salesImport/transform');
+const { parseNumber, normalizeStoreId } = require('../salesImport/transform');
 
 /** parseNumber returns null for Date objects — but if the "Hour" column happens to be time-formatted in Excel (e.g. 09:00), exceljs resolves it to a Date. Extract the hour component instead of rejecting it. */
 function parseHour(value) {
@@ -22,6 +22,11 @@ function transformRow(raw) {
   })();
   if (reportStoreId === null) errors.push('Missing Store Id');
 
+  // String-preserving form of the same column, used as store.id (the
+  // canonical DB primary key) — reportStoreId stays an integer for the
+  // report_store_id column/API field, unaffected.
+  const storeId = normalizeStoreId(raw.reportStoreId);
+
   const storeName = toTrimmedStringOrNull(raw.storeName);
   if (storeName === null) errors.push('Missing Store Name');
 
@@ -35,6 +40,7 @@ function transformRow(raw) {
     rowNumber: raw.rowNumber,
     brandName: toTrimmedStringOrNull(raw.brandName),
     reportStoreId,
+    storeId,
     storeName,
     grossSale,
     hour,

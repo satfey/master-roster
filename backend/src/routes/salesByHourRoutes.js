@@ -21,9 +21,10 @@ const upload = multer({ storage: multer.memoryStorage() });
  *       hour-of-day total aggregated across an entire month, not a single
  *       day. Because of that, the month can't be read from the file; it must
  *       be supplied via the required "month" form field (e.g. "2026-07").
- *       A Store Id with no matching store.storeCode is NOT invalid — it is
+ *       A Store Id with no matching existing store is NOT invalid — it is
  *       flagged via `willCreateStore: true` here, and the store is
- *       auto-created on commit (see /sales/by-hour/import).
+ *       auto-created on commit (see /sales/by-hour/import) using the Excel
+ *       Store ID directly as store.id.
  *     tags: [Sales By Hour]
  *     requestBody:
  *       required: true
@@ -57,7 +58,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                         validRows: { type: integer }
  *                         invalidRows: { type: integer }
  *                         duplicateRows: { type: integer }
- *                         newStoreCount: { type: integer, description: 'Number of distinct Store IDs with no matching store.storeCode — auto-created on commit, not treated as errors.' }
+ *                         newStoreCount: { type: integer, description: 'Number of distinct Store IDs with no matching existing store — auto-created on commit, not treated as errors.' }
  *                         rows:
  *                           type: array
  *                           items:
@@ -68,8 +69,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                                   rowNumber: { type: integer }
  *                                   status: { type: string, enum: [valid, invalid, duplicate] }
  *                                   errors: { type: array, items: { type: string } }
- *                                   storeId: { type: integer, nullable: true, example: 1001, description: 'Business Store ID (same as reportStoreId) — not the store UUID.' }
- *                                   storeUuid: { type: string, format: uuid, nullable: true, description: 'Internal store.id — null when the store does not exist yet (willCreateStore: true).' }
+ *                                   storeId: { type: string, nullable: true, example: '1001', description: 'The canonical Store ID — this IS store.id (same value as reportStoreId, as a string), not a UUID.' }
  *                                   willCreateStore: { type: boolean }
  *             example:
  *               success: true
@@ -86,8 +86,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                     errors: []
  *                     willCreateStore: false
  *                     reportStoreId: 1001
- *                     storeId: 1001
- *                     storeUuid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                     storeId: '1001'
  *                     brandName: ABC
  *                     storeName: ABC Central
  *                     reportMonth: '2026-07-01'
@@ -98,8 +97,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                     errors: []
  *                     willCreateStore: false
  *                     reportStoreId: 1001
- *                     storeId: 1001
- *                     storeUuid: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                     storeId: '1001'
  *                     brandName: ABC
  *                     storeName: ABC Central
  *                     reportMonth: '2026-07-01'
@@ -123,11 +121,12 @@ const upload = multer({ storage: multer.memoryStorage() });
  *     description: >
  *       Only rows that pass validation and aren't duplicates are inserted
  *       into sales_by_hour; the response reports what happened to every row.
- *       Store IDs with no matching store.storeCode are auto-created (one
- *       store per distinct Store ID, even if it appears on many rows) before
- *       the sales-by-hour rows are inserted — see `storesCreated` in the
- *       response. Duplicate detection is by (store, month, hour) — importing
- *       the same file for the same month twice will not double-insert.
+ *       Store IDs with no matching existing store are auto-created — the
+ *       Excel Store ID becomes store.id directly (one store per distinct
+ *       Store ID, even if it appears on many rows) before the sales-by-hour
+ *       rows are inserted — see `storesCreated` in the response. Duplicate
+ *       detection is by (store, month, hour) — importing the same file for
+ *       the same month twice will not double-insert.
  *     tags: [Sales By Hour]
  *     requestBody:
  *       required: true
@@ -164,9 +163,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                           items:
  *                             type: object
  *                             properties:
- *                               id: { type: string, format: uuid }
- *                               storeId: { type: string, example: '1001', description: 'Business Store ID (same as storeCode).' }
- *                               storeCode: { type: string, example: '1001' }
+ *                               id: { type: string, example: '1001', description: 'The canonical Store ID, taken directly from the Excel file — not a UUID.' }
+ *                               storeId: { type: string, example: '1001', description: 'Alias for id.' }
  *                               name: { type: string, nullable: true, example: 'ABC Central' }
  *                         failed:
  *                           type: array
@@ -184,9 +182,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 imported: 23
  *                 skippedDuplicates: 0
  *                 storesCreated:
- *                   - id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb999
+ *                   - id: '1001'
  *                     storeId: '1001'
- *                     storeCode: '1001'
  *                     name: ABC Central
  *                 failed:
  *                   - rowNumber: 30

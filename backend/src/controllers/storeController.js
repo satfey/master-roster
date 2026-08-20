@@ -2,6 +2,7 @@ const supabase = require('../config/supabase');
 const { success, failure } = require('../utils/apiResponse');
 const { getAllowedStoreIds } = require('../middleware/storeScope');
 const { withDisplayStoreId } = require('../utils/storeDisplay');
+const { normalizeStoreId } = require('../services/salesImport/transform');
 
 async function list(req, res) {
   const allowedStoreIds = getAllowedStoreIds(req.user);
@@ -26,10 +27,17 @@ async function getOne(req, res) {
 }
 
 async function create(req, res) {
-  const { name, region, areaCoachId } = req.body;
+  const { storeId, name, region, areaCoachId } = req.body;
+
+  // store.id has no auto-generated default — it IS the business Store ID,
+  // so it must be supplied explicitly, never invented.
+  const id = normalizeStoreId(storeId);
+  if (id === null) return failure(res, 'storeId is required', 400);
+  if (!name) return failure(res, 'name is required', 400);
+
   const { data: store, error } = await supabase
     .from('store')
-    .insert({ name, region, area_coach_id: areaCoachId || null })
+    .insert({ id, name, storeCode: id, region, area_coach_id: areaCoachId || null })
     .select()
     .single();
   if (error) throw error;

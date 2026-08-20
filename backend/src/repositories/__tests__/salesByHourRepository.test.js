@@ -6,12 +6,13 @@ jest.mock('../../config/supabase', () => ({ from: (...args) => mockFromImpl(...a
 
 const repo = require('../salesByHourRepository');
 
-/** Minimal fake supabase-js query builder: supports .select().in().eq() and is awaitable. */
+/** Minimal fake supabase-js query builder: supports .select().in().eq().insert() and is awaitable. */
 function createFakeFrom(tables) {
   const inCalls = [];
+  const insertCalls = [];
   const from = jest.fn((tableName) => {
-    const rows = tables[tableName] || [];
-    const state = { column: null, values: null, filters: [] };
+    const rows = tables[tableName] || (tables[tableName] = []);
+    const state = { column: null, values: null, filters: [], insertPayload: null };
     const builder = {
       select: jest.fn(() => builder),
       in: jest.fn((column, values) => {
@@ -21,15 +22,21 @@ function createFakeFrom(tables) {
         return builder;
       }),
       eq: jest.fn((col, val) => { state.filters.push([col, val]); return builder; }),
+      insert: jest.fn((payload) => {
+        state.insertPayload = payload;
+        insertCalls.push({ table: tableName, payload });
+        rows.push(...payload);
+        return builder;
+      }),
       then(resolve, reject) {
-        let matched = rows.filter((r) => state.values.includes(r[state.column]));
+        let matched = state.insertPayload ? state.insertPayload : rows.filter((r) => state.values.includes(r[state.column]));
         for (const [col, val] of state.filters) matched = matched.filter((r) => r[col] === val);
         return Promise.resolve({ data: matched, error: null }).then(resolve, reject);
       },
     };
     return builder;
   });
-  return { from, inCalls };
+  return { from, inCalls, insertCalls };
 }
 
 beforeEach(() => {
@@ -42,9 +49,9 @@ afterEach(() => {
 });
 
 describe('salesByHourRepository — batched .in() lookups (UND_ERR_HEADERS_OVERFLOW regression)', () => {
-  test('findStoresByCodes batches a 250-code lookup into requests of <=100 each, with no duplicates or losses', async () => {
+  test('findStoresByCodes looks up by id (the source Store ID IS store.id now) and batches a 250-code lookup into requests of <=100 each, with no duplicates or losses', async () => {
     const storeCodes = Array.from({ length: 250 }, (_, i) => String(1000 + i));
-    const storeTable = storeCodes.map((code, i) => ({ id: `store-${i}`, storeCode: code, name: `Store ${code}` }));
+    const storeTable = storeCodes.map((code) => ({ id: code, storeCode: code, name: `Store ${code}` }));
     const { from, inCalls } = createFakeFrom({ store: storeTable });
     mockFromImpl = from;
 
@@ -52,13 +59,26 @@ describe('salesByHourRepository — batched .in() lookups (UND_ERR_HEADERS_OVERF
 
     expect(inCalls.length).toBeGreaterThan(1);
     for (const call of inCalls) {
+      expect(call.column).toBe('id');
       expect(call.values.length).toBeLessThanOrEqual(100);
       expect(call.values.join(',').length).toBeLessThan(5000); // never approaches the ~16KB URL limit
     }
     expect(inCalls.flatMap((c) => c.values)).toEqual(storeCodes);
 
     expect(result.size).toBe(250);
-    for (const code of storeCodes) expect(result.get(code)).toMatchObject({ storeCode: code });
+    for (const code of storeCodes) expect(result.get(code)).toMatchObject({ id: code, storeCode: code });
+  });
+
+  test('createStores inserts the Excel Store ID as store.id directly — never a generated UUID', async () => {
+    const { from, insertCalls } = createFakeFrom({ store: [] });
+    mockFromImpl = from;
+
+    const created = await repo.createStores([{ storeCode: '1001', name: 'New Store' }]);
+
+    expect(insertCalls).toHaveLength(1);
+    expect(insertCalls[0].payload[0].id).toBe('1001');
+    expect(created[0].id).toBe('1001');
+    expect(created[0].id).not.toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-/i); // not UUID-shaped
   });
 
   test('findExistingRecordKeys batches a 200-store-id lookup (the exact shape of the UND_ERR_HEADERS_OVERFLOW report) and still applies the month filter correctly per batch', async () => {

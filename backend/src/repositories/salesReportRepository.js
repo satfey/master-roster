@@ -7,20 +7,22 @@ function recordKey(storeId, date) {
 }
 
 /**
- * Looks up stores by the report's "Store Id" column (integer in Excel),
- * matched against store.storeCode (VARCHAR(4)). Batched — a full report can
- * reference hundreds/thousands of distinct stores, and a single
- * `.in('storeCode', codes)` request would otherwise build a request URL long
- * enough to exceed PostgREST's ~16KB header limit (UND_ERR_HEADERS_OVERFLOW).
+ * Looks up stores by the report's "Store Id" column — the Excel Store ID is
+ * store.id itself now (store.storeCode is kept only as a non-canonical
+ * compatibility column). Batched — a full report can reference
+ * hundreds/thousands of distinct stores, and a single `.in('id', codes)`
+ * request would otherwise build a request URL long enough to exceed
+ * PostgREST's ~16KB header limit (UND_ERR_HEADERS_OVERFLOW).
  */
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
-  const stores = await runInBatches(codes, (batch) => supabase.from('store').select('*').in('storeCode', batch));
-  return new Map(stores.map((s) => [s.storeCode, s]));
+  const stores = await runInBatches(codes, (batch) => supabase.from('store').select('*').in('id', batch));
+  return new Map(stores.map((s) => [s.id, s]));
 }
 
 /**
- * Auto-creates stores referenced by the report but not yet in `store`.
+ * Auto-creates stores referenced by the report but not yet in `store`. The
+ * Excel Store ID becomes store.id directly — never a generated UUID.
  * `newStores` must already be de-duplicated by storeCode by the caller — this
  * does one bulk insert, not one per row, so a Store ID repeated across many
  * rows in the same file only ever creates a single store.
@@ -29,7 +31,7 @@ async function createStores(newStores) {
   if (!newStores.length) return [];
   const { data, error } = await supabase
     .from('store')
-    .insert(newStores.map((s) => ({ name: s.name, storeCode: s.storeCode, region: null, area_coach_id: null })))
+    .insert(newStores.map((s) => ({ id: s.storeCode, name: s.name, storeCode: s.storeCode, region: null, area_coach_id: null })))
     .select();
   if (error) throw error;
   return data;

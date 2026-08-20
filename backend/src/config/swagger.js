@@ -29,8 +29,8 @@ const schemas = {
       email: { type: 'string', format: 'email', example: 'admin@test.com' },
       role: { type: 'string', example: 'ADMIN' },
       permissions: { type: 'array', items: { type: 'string' }, example: ['*'] },
-      storeId: { type: 'string', format: 'uuid', nullable: true },
-      areaStoreIds: { type: 'array', items: { type: 'string', format: 'uuid' }, example: [] },
+      storeId: { type: 'string', nullable: true, example: '1001' },
+      areaStoreIds: { type: 'array', items: { type: 'string' }, example: [] },
     },
   },
   Role: {
@@ -47,20 +47,21 @@ const schemas = {
   },
   Store: {
     type: 'object',
+    description: 'store.id IS the canonical Store ID from the source Excel file (e.g. "1001") — a VARCHAR primary key, not a UUID.',
     properties: {
-      id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1', description: 'Internal primary key — used for PUT/DELETE and other backend relationships, not meant for display.' },
-      storeId: { type: 'string', example: '1001', description: 'Business-facing Store ID (same value as storeCode) — this is what should be shown to users, not `id`.' },
+      id: { type: 'string', example: '1001', description: 'The canonical Store ID, taken directly from the source file on import. This is the primary key — not a UUID.' },
+      storeId: { type: 'string', example: '1001', description: 'Alias for `id`, for consumers that look for `storeId` specifically.' },
       name: { type: 'string', example: 'Bangna Store' },
       region: { type: 'string', nullable: true, example: 'Bangkok' },
-      area_coach_id: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002' },
-      storeCode: { type: 'string', nullable: true, example: '1001', description: 'Join key for the sales report importer (col B "Store Id", matched via String(reportStoreId))' },
+      area_coach_id: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002', description: 'FK to area_coach.id — still a UUID; Area Coaches are matched by name, not a source-file ID.' },
+      storeCode: { type: 'string', nullable: true, example: '1001', description: 'Non-canonical compatibility field — same value as `id`. `id` is the canonical identity.' },
     },
   },
   Employee: {
     type: 'object',
     properties: {
-      id: { type: 'string', format: 'uuid', example: 'cccccccc-cccc-cccc-cccc-cccccccc0001' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      id: { type: 'string', format: 'uuid', example: 'cccccccc-cccc-cccc-cccc-cccccccc0001', description: 'UUID — no importer supplies a source "Staff ID", so this stays DB-generated.' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       full_name: { type: 'string', example: 'สมชาย ใจดี' },
       position: { type: 'string', nullable: true, example: 'Cashier' },
       hourly_rate: { type: 'number', format: 'float', nullable: true, example: 120 },
@@ -74,7 +75,7 @@ const schemas = {
       full_name: { type: 'string', example: 'Bob Manager' },
       email: { type: 'string', format: 'email', example: 'manager1@test.com' },
       role_id: { type: 'string', format: 'uuid', example: '33333333-3333-3333-3333-333333333333' },
-      store_id: { type: 'string', format: 'uuid', nullable: true, example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', nullable: true, example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       is_active: { type: 'boolean', example: true },
     },
   },
@@ -89,7 +90,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: 'eeeeeeee-eeee-eeee-eeee-eeeeeeee0001' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       sales_date: { type: 'string', format: 'date', example: '2026-07-25' },
       amount: { type: 'number', format: 'float', example: 25000 },
       source_type_id: { type: 'string', format: 'uuid', example: 'dddddddd-dddd-dddd-dddd-dddddddd0001' },
@@ -101,7 +102,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      store_id: { type: 'string', format: 'uuid' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id — this and report_store_id are now the same value in different types.' },
       report_store_id: { type: 'integer', example: 1001 },
       store_bu_id: { type: 'integer', nullable: true, example: 5 },
       store_name: { type: 'string', nullable: true, example: 'Bangna Store' },
@@ -137,7 +138,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid' },
-      store_id: { type: 'string', format: 'uuid' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id — this and report_store_id are now the same value in different types.' },
       report_store_id: { type: 'integer', example: 1001 },
       brand_name: { type: 'string', nullable: true, example: 'ABC' },
       store_name: { type: 'string', nullable: true, example: 'ABC Central' },
@@ -162,7 +163,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: '13131313-1313-1313-1313-131313131301' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       forecast_date: { type: 'string', format: 'date', example: '2026-08-01' },
       daypart: { type: 'string', example: 'FULL_DAY' },
       forecasted_sales: { type: 'number', format: 'float', example: 32000 },
@@ -173,7 +174,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: '14141414-1414-1414-1414-141414141401' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       target_productivity: { type: 'number', format: 'float', nullable: true, example: 1200 },
       target_col_percent: { type: 'number', format: 'float', nullable: true, example: 22 },
       min_staff_per_shift: { type: 'number', format: 'float', nullable: true, example: 3 },
@@ -206,7 +207,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: '16161616-1616-1616-1616-161616161601' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       week_start: { type: 'string', format: 'date', example: '2026-08-03' },
       status: { type: 'string', example: 'APPROVED' },
       approved_by: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002' },

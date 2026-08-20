@@ -1,4 +1,4 @@
-const { parseNumber, parseDate: parseDateBase } = require('../salesImport/transform');
+const { parseNumber, parseDate: parseDateBase, normalizeStoreId } = require('../salesImport/transform');
 
 const MONTH_ABBREVIATIONS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
 
@@ -37,6 +37,11 @@ function transformRow(raw) {
   const reportStoreId = toInt(raw.reportStoreId);
   if (reportStoreId === null) errors.push('Missing or invalid Store ID (column B)');
 
+  // String-preserving form of the same column, used as store.id (the
+  // canonical DB primary key) — reportStoreId stays an integer for the
+  // report_store_id column/API field, unaffected.
+  const storeId = normalizeStoreId(raw.reportStoreId);
+
   let reportDate = null;
   if (raw.reportDate === null || raw.reportDate === undefined || raw.reportDate === '') {
     errors.push('Missing Date (column E)');
@@ -49,6 +54,7 @@ function transformRow(raw) {
     rowNumber: raw.rowNumber,
     storeBuId,
     reportStoreId,
+    storeId,
     storeName: toTrimmedStringOrNull(raw.storeName),
     week: toTrimmedStringOrNull(raw.week), // e.g. "2026-27" — not numeric, preserved as-is
     reportDate,

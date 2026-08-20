@@ -1,22 +1,7 @@
-const { parseDate } = require('../salesImport/transform');
+const { parseDate, normalizeStoreId } = require('../salesImport/transform');
 
 function toTrimmedStringOrNull(value) {
   if (value === null || value === undefined) return null;
-  const str = String(value).trim();
-  return str === '' ? null : str;
-}
-
-/**
- * Preserves Store IDs exactly as given. A numeric Excel cell (e.g. 1001)
- * becomes its plain integer text; a text cell (e.g. "001001") is kept
- * verbatim — it is never round-tripped through Number(), which would strip
- * leading zeros.
- */
-function normalizeStoreId(value) {
-  if (value === null || value === undefined) return null;
-  if (typeof value === 'number') {
-    return Number.isFinite(value) ? String(Math.trunc(value)) : null;
-  }
   const str = String(value).trim();
   return str === '' ? null : str;
 }

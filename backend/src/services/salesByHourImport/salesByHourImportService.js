@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const { parseSalesByHourWorkbook } = require('./excelParser');
 const { transformRows } = require('./transform');
 const repo = require('../../repositories/salesByHourRepository');
@@ -7,9 +6,8 @@ const repo = require('../../repositories/salesByHourRepository');
 function pickStoreNamesByCode(rows) {
   const names = new Map();
   for (const row of rows) {
-    if (row.reportStoreId === null) continue;
-    const code = String(row.reportStoreId);
-    if (!names.has(code) && row.storeName) names.set(code, row.storeName);
+    if (row.storeId === null) continue;
+    if (!names.has(row.storeId) && row.storeName) names.set(row.storeId, row.storeName);
   }
   return names;
 }
@@ -17,12 +15,16 @@ function pickStoreNamesByCode(rows) {
 /**
  * Resolves every distinct Store Id referenced in the file to a store row,
  * creating missing stores when `createMissingStores` is true (commit), or
- * standing in a per-call placeholder id when false (preview — nothing is
+ * standing in a per-call placeholder when false (preview — nothing is
  * written to the DB, but the row shape/dedup logic stays consistent).
  * A Store Id repeated across many rows resolves/creates exactly once.
+ *
+ * The Excel Store ID *is* store.id now (no separate UUID identity) — a
+ * "placeholder" here is not random, it's the same id the row will actually
+ * get on commit, since that id is deterministic from the source file.
  */
 async function resolveStores(rows, createMissingStores) {
-  const codes = [...new Set(rows.filter((r) => r.reportStoreId !== null).map((r) => String(r.reportStoreId)))];
+  const codes = [...new Set(rows.filter((r) => r.storeId !== null).map((r) => r.storeId))];
   const namesByCode = pickStoreNamesByCode(rows);
 
   const storeMap = await repo.findStoresByCodes(codes);
@@ -33,12 +35,12 @@ async function resolveStores(rows, createMissingStores) {
     if (createMissingStores) {
       const created = await repo.createStores(missingCodes.map((code) => ({ storeCode: code, name: namesByCode.get(code) || null })));
       for (const store of created) {
-        storeMap.set(store.storeCode, store);
+        storeMap.set(store.id, store);
         createdStores.push(store);
       }
     } else {
       for (const code of missingCodes) {
-        storeMap.set(code, { id: crypto.randomUUID(), storeCode: code, name: namesByCode.get(code) || null, pending: true });
+        storeMap.set(code, { id: code, storeCode: code, name: namesByCode.get(code) || null, pending: true });
       }
     }
   }
@@ -60,7 +62,7 @@ async function evaluateRows(buffer, reportMonth, createMissingStores) {
 
   const previewRows = rows.map((row) => {
     const errors = [...row.errors];
-    const store = row.reportStoreId !== null ? storeMap.get(String(row.reportStoreId)) : null;
+    const store = row.storeId !== null ? storeMap.get(row.storeId) : null;
 
     let status = 'invalid';
     if (errors.length === 0 && store) {
@@ -78,8 +80,7 @@ async function evaluateRows(buffer, reportMonth, createMissingStores) {
       status,
       errors,
       reportStoreId: row.reportStoreId,
-      storeId: row.reportStoreId, // business-facing Store ID (e.g. 1001), same value as reportStoreId — not the internal UUID
-      storeUuid: store?.id || null,
+      storeId: row.storeId, // business-facing Store ID (e.g. "1001") — this IS store.id, the canonical primary key, not a UUID
       willCreateStore: Boolean(store?.pending),
       brandName: row.brandName,
       storeName: row.storeName,
@@ -113,7 +114,7 @@ async function commitSalesByHourImport(buffer, reportMonth, userId) {
 
   const sourceType = await repo.getSalesByHourSourceType();
   const records = validRows.map((r) => ({
-    store_id: r.storeUuid,
+    store_id: r.storeId,
     report_store_id: r.reportStoreId,
     brand_name: r.brandName,
     store_name: r.storeName,
@@ -131,7 +132,7 @@ async function commitSalesByHourImport(buffer, reportMonth, userId) {
     imported,
     skippedDuplicates: rows.filter((r) => r.status === 'duplicate').length,
     failed: rows.filter((r) => r.status === 'invalid').map((r) => ({ rowNumber: r.rowNumber, reportStoreId: r.reportStoreId, errors: r.errors })),
-    storesCreated: createdStores.map((s) => ({ id: s.id, storeId: s.storeCode, storeCode: s.storeCode, name: s.name })),
+    storesCreated: createdStores.map((s) => ({ id: s.id, storeId: s.id, storeCode: s.storeCode, name: s.name })),
   };
 }
 

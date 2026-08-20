@@ -36,20 +36,20 @@ async function createAreaCoaches(names) {
   return data;
 }
 
-/** Looks up stores by the report's "ID" column, matched against store.storeCode (VARCHAR). */
+/** Looks up stores by the report's "ID" column — the Excel Store ID is store.id itself now (store.storeCode is kept only as a non-canonical compatibility column). */
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
-  const { data: stores, error } = await supabase.from('store').select('*').in('storeCode', codes);
+  const { data: stores, error } = await supabase.from('store').select('*').in('id', codes);
   if (error) throw error;
-  return new Map(stores.map((s) => [s.storeCode, s]));
+  return new Map(stores.map((s) => [s.id, s]));
 }
 
-/** Bulk-inserts new stores. region has no source column in this report, so it is left NULL; id is DB-generated. */
+/** Bulk-inserts new stores. The Excel Store ID becomes store.id directly — never a generated UUID. region has no source column in this report, so it is left NULL. */
 async function createStores(newStores) {
   if (!newStores.length) return [];
   const { data, error } = await supabase
     .from('store')
-    .insert(newStores.map((s) => ({ name: s.name, storeCode: s.storeCode, area_coach_id: s.areaCoachId, region: null })))
+    .insert(newStores.map((s) => ({ id: s.storeCode, name: s.name, storeCode: s.storeCode, area_coach_id: s.areaCoachId, region: null })))
     .select();
   if (error) throw error;
   return data;

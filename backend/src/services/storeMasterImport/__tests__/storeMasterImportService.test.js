@@ -26,7 +26,7 @@ function createFakeStoreTable(initial = []) {
 
   repo.createStores.mockImplementation(async (newStores) => {
     const created = newStores.map((s) => ({
-      id: crypto.randomUUID(),
+      id: s.storeCode, // the Excel Store ID IS store.id — never a random UUID
       storeCode: s.storeCode,
       name: s.name,
       area_coach_id: s.areaCoachId ?? null,
@@ -225,8 +225,8 @@ describe('storeMasterImportService — API response: storeId is the business Sto
     expect(preview.rows.map((r) => r.storeId)).toEqual(['1001', '1002']);
   });
 
-  test('storesCreated/storesUpdated include storeId (storeCode) alongside the entity id (UUID) — both available, clearly named', async () => {
-    createFakeStoreTable([{ id: 'uuid-1001', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
+  test('storesCreated/storesUpdated include storeId as an alias of id — both hold the same source Store ID, never a UUID', async () => {
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
     createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([
       ['2026-07-01', 1001, 'New Name', ''],
@@ -235,14 +235,14 @@ describe('storeMasterImportService — API response: storeId is the business Sto
 
     const result = await commitStoreMasterImport(buffer);
 
-    expect(result.storesUpdated[0]).toMatchObject({ id: 'uuid-1001', storeId: '1001' });
-    expect(result.storesCreated[0]).toMatchObject({ storeId: '1002', storeCode: '1002' });
+    expect(result.storesUpdated[0]).toMatchObject({ id: '1001', storeId: '1001' });
+    expect(result.storesCreated[0]).toMatchObject({ id: '1002', storeId: '1002', storeCode: '1002' });
   });
 });
 
 describe('storeMasterImportService — create vs update', () => {
   test('8. an existing Store is updated instead of duplicated', async () => {
-    const table = createFakeStoreTable([{ id: 'store-1', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
+    const table = createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
     createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'New Name', '']]);
 
@@ -267,7 +267,7 @@ describe('storeMasterImportService — create vs update', () => {
   });
 
   test('a row that already matches the DB exactly resolves to NO_CHANGE and writes nothing', async () => {
-    createFakeStoreTable([{ id: 'store-1', storeCode: '1001', name: 'Bangna Store', area_coach_id: null }]);
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Bangna Store', area_coach_id: null }]);
     createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([['2026-07-01', 1001, 'Bangna Store', '']]);
 
@@ -359,7 +359,7 @@ describe('storeMasterImportService — idempotency and safety', () => {
   });
 
   test('19. commit creates and updates exactly the right stores in one file', async () => {
-    const table = createFakeStoreTable([{ id: 'store-1', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
+    const table = createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'Old Name', area_coach_id: null }]);
     createFakeAreaCoachTable([{ id: 'coach-1', name: 'Alice Area Coach' }]);
     const buffer = await buildWorkbook([
       ['2026-07-01', 1001, 'Bangna Store', 'Alice Area Coach'], // existing -> UPDATE
