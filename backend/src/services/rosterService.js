@@ -49,7 +49,7 @@ async function generateRoster({ storeId, weekStart, forecastedSales, allowedHour
     .select('*')
     .eq('store_id', storeId)
     .eq('is_active', true)
-    .order('full_name', { ascending: true });
+    .order('last_name', { ascending: true });
   if (employeesError) throw employeesError;
   if (employees.length === 0) {
     throw Object.assign(new Error('No active employees found for this store'), { status: 400 });

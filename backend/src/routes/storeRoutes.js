@@ -144,11 +144,11 @@ const { storeScope } = require('../middleware/storeScope');
  *                 region: Bangkok
  *                 area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
  *                 employee:
- *                   - id: cccccccc-cccc-cccc-cccc-cccccccc0001
+ *                   - id: '000123'
  *                     store_id: '1001'
- *                     full_name: สมชาย ใจดี
+ *                     first_name: Somchai
+ *                     last_name: Jaidee
  *                     position: Cashier
- *                     hourly_rate: 120
  *                     is_active: true
  *                 labor_guideline:
  *                   - id: 14141414-1414-1414-1414-141414141401

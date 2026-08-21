@@ -1,4 +1,4 @@
-const { importEmployees, importStores } = require('../services/importService');
+const { importStores } = require('../services/importService');
 const { previewSalesImport, commitSalesImport } = require('../services/salesImport/salesImportService');
 const { importGeneric } = require('../services/genericImport/genericImportService');
 const { success, failure } = require('../utils/apiResponse');
@@ -15,13 +15,6 @@ async function salesImport(req, res) {
   const result = await commitSalesImport(req.file.buffer);
   await logActivity({ userId: req.user.id, action: 'IMPORT_EXCEL', details: { type: 'SALES', ...result } });
   return success(res, result, 'Sales data imported');
-}
-
-async function employeeImport(req, res) {
-  if (!req.file) return failure(res, 'No file uploaded', 400);
-  const result = await importEmployees(req.file.buffer);
-  await logActivity({ userId: req.user.id, action: 'IMPORT_EXCEL', details: { type: 'EMPLOYEE', ...result } });
-  return success(res, result, 'Employee data imported');
 }
 
 async function storeImport(req, res) {
@@ -51,4 +44,4 @@ async function genericImport(req, res) {
   return res.status(result.success ? 201 : 422).json(result);
 }
 
-module.exports = { salesImportPreview, salesImport, employeeImport, storeImport, genericImport };
+module.exports = { salesImportPreview, salesImport, storeImport, genericImport };

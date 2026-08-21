@@ -76,17 +76,17 @@ const { storeScope } = require('../middleware/storeScope');
  *                 shift:
  *                   - id: 564ffd50-74cc-45cb-81b8-f682f881b732
  *                     roster_id: f69dde10-f1b2-49e5-97ed-caac5809b7ca
- *                     employee_id: cccccccc-cccc-cccc-cccc-cccccccc0001
+ *                     employee_id: '000123'
  *                     shift_date: '2026-08-09'
  *                     start_time: '08:00:00'
  *                     end_time: '16:00:00'
  *                     planned_hours: 7
  *                     employee:
- *                       id: cccccccc-cccc-cccc-cccc-cccccccc0001
- *                       store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *                       full_name: สมชาย ใจดี
+ *                       id: '000123'
+ *                       store_id: '1001'
+ *                       first_name: Somchai
+ *                       last_name: Jaidee
  *                       position: Cashier
- *                       hourly_rate: 120
  *                       is_active: true
  *                 allowedHours: 38
  *                 totalScheduledHours: 35
@@ -223,12 +223,12 @@ const { storeScope } = require('../middleware/storeScope');
  *                       description: Shift ID
  *                     employeeId:
  *                       type: string
- *                       format: uuid
+ *                       description: employee.id — the Employee ID from the source file, not a UUID
  *           example:
  *             status: APPROVED
  *             shifts:
  *               - id: 17171717-1717-1717-1717-171717171701
- *                 employeeId: cccccccc-cccc-cccc-cccc-cccccccc0002
+ *                 employeeId: '000123'
  *     responses:
  *       200:
  *         description: Roster updated (response is the roster row only — reassigned shifts are not re-embedded)

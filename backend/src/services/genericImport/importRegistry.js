@@ -12,7 +12,6 @@
  * register it below.
  */
 const parsers = {
-  employee: require('./parsers/employeeImport'),
   store: require('./parsers/storeImport'),
   laborGuideline: require('./parsers/laborGuidelineImport'),
 };

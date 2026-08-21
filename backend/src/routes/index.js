@@ -6,6 +6,7 @@ router.use('/roster', require('./rosterRoutes'));
 router.use('/dashboard', require('./dashboardRoutes'));
 router.use('/store/master', require('./storeMasterImportRoutes'));
 router.use('/store', require('./storeRoutes'));
+router.use('/employee', require('./employeeImportRoutes'));
 router.use('/employee', require('./employeeRoutes'));
 router.use('/sales/report', require('./salesReportRoutes'));
 router.use('/sales/by-hour', require('./salesByHourRoutes'));
