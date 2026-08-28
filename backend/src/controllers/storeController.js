@@ -59,7 +59,7 @@ async function update(req, res) {
 
 async function upsertGuideline(req, res) {
   const { id } = req.params; // storeId
-  const { targetProductivity, targetColPercent, minStaffPerShift } = req.body;
+  const { targetProductivity, targetColPercent, minStaffPerShift, monthlyLaborHours } = req.body;
 
   const { data: existing, error: findError } = await supabase
     .from('labor_guideline')
@@ -74,6 +74,7 @@ async function upsertGuideline(req, res) {
     target_productivity: targetProductivity,
     target_col_percent: targetColPercent,
     min_staff_per_shift: minStaffPerShift,
+    monthly_labor_hours: monthlyLaborHours, // PHASE 2: the store-level monthly labor-hour guideline (e.g. 1,000 hours/month)
   };
 
   const { data: guideline, error } = existing

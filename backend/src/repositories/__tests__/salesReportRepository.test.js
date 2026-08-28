@@ -6,13 +6,24 @@ jest.mock('../../config/supabase', () => ({ from: (...args) => mockFromImpl(...a
 
 const repo = require('../salesReportRepository');
 
-/** Minimal fake supabase-js query builder: supports .select().in().gte().lte().insert() and is awaitable. */
+/**
+ * Minimal fake supabase-js query builder: supports
+ * .select().in().gte().lte().insert().upsert() and is awaitable.
+ *
+ * upsert() actually performs an ON CONFLICT (onConflict columns) DO UPDATE
+ * merge against the in-memory `rows` array (mutating it in place for a
+ * matching key, pushing a brand-new row otherwise) — real enough to prove
+ * the repository's upsertRecords() overwrites an existing row rather than
+ * duplicating it, and that fields absent from the payload (id, created_at)
+ * are left untouched on an existing row.
+ */
 function createFakeFrom(tables) {
   const inCalls = [];
   const insertCalls = [];
+  const upsertCalls = [];
   const from = jest.fn((tableName) => {
     const rows = tables[tableName] || (tables[tableName] = []);
-    const state = { column: null, values: null, filters: [], insertPayload: null };
+    const state = { column: null, values: null, filters: [], insertPayload: null, upsertResults: null };
     const builder = {
       select: jest.fn(() => builder),
       in: jest.fn((column, values) => {
@@ -29,8 +40,26 @@ function createFakeFrom(tables) {
         rows.push(...payload);
         return builder;
       }),
+      upsert: jest.fn((payload, options) => {
+        upsertCalls.push({ table: tableName, payload, options });
+        const conflictCols = ((options && options.onConflict) || '').split(',').map((s) => s.trim()).filter(Boolean);
+        state.upsertResults = payload.map((record) => {
+          const existing = conflictCols.length ? rows.find((r) => conflictCols.every((c) => r[c] === record[c])) : undefined;
+          if (existing) {
+            Object.assign(existing, record); // only fields present in `record` change — id/created_at stay whatever they already were
+            return existing;
+          }
+          const created = { id: `generated-${rows.length}`, created_at: '2000-01-01T00:00:00.000Z', ...record };
+          rows.push(created);
+          return created;
+        });
+        return builder;
+      }),
       then(resolve, reject) {
-        let matched = state.insertPayload ? state.insertPayload : rows.filter((r) => state.values.includes(r[state.column]));
+        let matched;
+        if (state.upsertResults) matched = state.upsertResults;
+        else if (state.insertPayload) matched = state.insertPayload;
+        else matched = rows.filter((r) => state.values.includes(r[state.column]));
         for (const [op, col, val] of state.filters) {
           matched = matched.filter((r) => (op === 'gte' ? r[col] >= val : r[col] <= val));
         }
@@ -39,7 +68,7 @@ function createFakeFrom(tables) {
     };
     return builder;
   });
-  return { from, inCalls, insertCalls };
+  return { from, inCalls, insertCalls, upsertCalls };
 }
 
 beforeEach(() => {
@@ -110,5 +139,73 @@ describe('salesReportRepository — batched .in() lookups (UND_ERR_HEADERS_OVERF
 
     expect(from).not.toHaveBeenCalled();
     expect(result.size).toBe(0);
+  });
+});
+
+describe('salesReportRepository — upsertRecords (ON CONFLICT (store_id, report_date) DO UPDATE)', () => {
+  test('a new (store_id, report_date) key is inserted with a generated id and created_at', async () => {
+    const { from, upsertCalls } = createFakeFrom({ sales_report: [] });
+    mockFromImpl = from;
+
+    const count = await repo.upsertRecords([{ store_id: '1109', report_date: '2026-07-10', gross_actual: 100, updated_at: '2026-08-27T00:00:00.000Z' }]);
+
+    expect(count).toBe(1);
+    expect(upsertCalls[0].options).toEqual({ onConflict: 'store_id,report_date' });
+    expect(upsertCalls[0].payload[0].id).toBeUndefined(); // never sent — the DB assigns it on insert
+    expect(upsertCalls[0].payload[0].created_at).toBeUndefined(); // never sent — the DB defaults it on insert
+  });
+
+  test('an existing (store_id, report_date) key is overwritten in place — not duplicated, and no 23505 unique-violation occurs', async () => {
+    const table = {
+      sales_report: [{
+        id: 'existing-uuid-1',
+        store_id: '1108',
+        report_date: '2026-07-09',
+        gross_actual: 100,
+        created_at: '2026-01-01T00:00:00.000Z',
+        updated_at: '2026-01-01T00:00:00.000Z',
+      }],
+    };
+    const { from } = createFakeFrom(table);
+    mockFromImpl = from;
+
+    const count = await repo.upsertRecords([{ store_id: '1108', report_date: '2026-07-09', gross_actual: 999, updated_at: '2026-08-27T12:00:00.000Z' }]);
+
+    expect(count).toBe(1);
+    expect(table.sales_report).toHaveLength(1); // still exactly one row for this key — never a second one
+    const row = table.sales_report[0];
+    expect(row.id).toBe('existing-uuid-1'); // PK untouched by the update
+    expect(row.gross_actual).toBe(999); // overwritten with the new file's data — the file is the source of truth
+    expect(row.created_at).toBe('2026-01-01T00:00:00.000Z'); // preserved — never part of the update payload
+    expect(row.updated_at).toBe('2026-08-27T12:00:00.000Z'); // refreshed to record this import
+  });
+
+  test('sends every record in a single upsert call regardless of batch size — one statement is atomic, no partial-batch risk', async () => {
+    const { from, upsertCalls } = createFakeFrom({ sales_report: [] });
+    mockFromImpl = from;
+    const records = Array.from({ length: 500 }, (_, i) => ({ store_id: String(i), report_date: '2026-07-09', updated_at: 'x' }));
+
+    await repo.upsertRecords(records);
+
+    expect(upsertCalls).toHaveLength(1);
+    expect(upsertCalls[0].payload).toHaveLength(500);
+  });
+
+  test('an empty records list never issues a request', async () => {
+    const { from, upsertCalls } = createFakeFrom({ sales_report: [] });
+    mockFromImpl = from;
+
+    const count = await repo.upsertRecords([]);
+
+    expect(count).toBe(0);
+    expect(upsertCalls).toHaveLength(0);
+  });
+
+  test('propagates the error and writes nothing when the upsert itself fails', async () => {
+    mockFromImpl = () => ({
+      upsert: () => ({ select: () => Promise.resolve({ data: null, error: new Error('constraint violation') }) }),
+    });
+
+    await expect(repo.upsertRecords([{ store_id: '1108', report_date: '2026-07-09', updated_at: 'x' }])).rejects.toThrow('constraint violation');
   });
 });

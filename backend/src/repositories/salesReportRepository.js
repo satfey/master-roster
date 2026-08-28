@@ -72,11 +72,30 @@ async function findExistingReportKeys(storeIds, dates) {
   return new Set(existing.map((r) => recordKey(r.store_id, r.report_date)));
 }
 
-async function insertRecords(records) {
+/**
+ * Writes sales_report rows as an atomic upsert on the (store_id, report_date)
+ * unique constraint (sales_report_store_id_report_date_key): a key not yet in
+ * the table is inserted, a key that already exists is overwritten in place —
+ * the newly uploaded file is the source of truth, so a re-imported day
+ * replaces the old one rather than being rejected as a duplicate or raising
+ * a 23505 unique-violation. `id` and `created_at` are deliberately absent
+ * from every record here — PostgREST's DO UPDATE SET clause only touches
+ * columns present in the payload, so omitting them means the DB default
+ * (gen_random_uuid() / now()) applies on insert, and the existing row's `id`
+ * and original `created_at` are left completely untouched on update. A
+ * single call for the whole batch, not chunked — one INSERT..ON CONFLICT
+ * statement is one atomic unit in Postgres, so either every row in this
+ * batch is written or (on error) none are; there is no partial-batch state
+ * to roll back.
+ */
+async function upsertRecords(records) {
   if (!records.length) return 0;
-  const { data, error } = await supabase.from('sales_report').insert(records).select();
+  const { data, error } = await supabase
+    .from('sales_report')
+    .upsert(records, { onConflict: 'store_id,report_date' })
+    .select();
   if (error) throw error;
   return data.length;
 }
 
-module.exports = { findStoresByCodes, createStores, getSalesReportSourceType, findExistingReportKeys, insertRecords, recordKey };
+module.exports = { findStoresByCodes, createStores, getSalesReportSourceType, findExistingReportKeys, upsertRecords, recordKey };

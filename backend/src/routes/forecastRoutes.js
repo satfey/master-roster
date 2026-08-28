@@ -121,8 +121,92 @@ const { storeScope } = require('../middleware/storeScope');
  *         $ref: '#/components/responses/ForbiddenError'
  *       500:
  *         $ref: '#/components/responses/ServerError'
+ * /forecast/hourly:
+ *   post:
+ *     summary: Generate an hourly sales forecast for a store over a date range
+ *     description: >
+ *       Statistical baseline, not ML: forecasted_sales(date, hour) =
+ *       dailyForecast(date) x hourFraction(hour). dailyForecast is a
+ *       weekday-aware average from sales_report history (same store + same
+ *       weekday, falling back to the store's overall daily average, or 0
+ *       with no history). hourFraction is the store's historical
+ *       hour-of-day sales shape from sales_by_hour (falling back to a
+ *       chain-wide shape, or an equal 1/13 share per operating hour as a
+ *       last resort). Persists into the existing sales_forecast table —
+ *       daypart = 'HOUR_09'..'HOUR_21' for these rows, vs. 'FULL_DAY' for
+ *       POST /forecast above; no schema change was needed.
+ *     tags: [Forecast]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [storeId, startDate, endDate]
+ *             properties:
+ *               storeId: { type: string, example: '1005' }
+ *               startDate: { type: string, format: date, example: '2026-08-24' }
+ *               endDate: { type: string, format: date, example: '2026-08-30' }
+ *           example:
+ *             storeId: '1005'
+ *             startDate: '2026-08-24'
+ *             endDate: '2026-08-30'
+ *     responses:
+ *       200:
+ *         description: Hourly forecast generated
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         modelRunId: { type: string, format: uuid }
+ *                         hourShapeSource: { type: string, enum: [STORE_HOUR_SHAPE, CHAIN_HOUR_SHAPE, UNIFORM_FALLBACK] }
+ *                         totalForecast: { type: number }
+ *                         days:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               date: { type: string, format: date }
+ *                               dailyForecast: { type: number }
+ *                               dailyForecastSource: { type: string, enum: [STORE_WEEKDAY_AVERAGE, STORE_DAILY_AVERAGE, NO_HISTORY] }
+ *                               hours:
+ *                                 type: array
+ *                                 items:
+ *                                   type: object
+ *                                   properties:
+ *                                     hour: { type: integer }
+ *                                     forecastedSales: { type: number }
+ *             example:
+ *               success: true
+ *               message: Hourly forecast generated
+ *               data:
+ *                 modelRunId: 95a070a8-9a30-4547-8d81-06e87c49b973
+ *                 hourShapeSource: STORE_HOUR_SHAPE
+ *                 totalForecast: 32000
+ *                 days:
+ *                   - date: '2026-08-24'
+ *                     dailyForecast: 32000
+ *                     dailyForecastSource: STORE_WEEKDAY_AVERAGE
+ *                     hours:
+ *                       - { hour: 9, forecastedSales: 400 }
+ *                       - { hour: 12, forecastedSales: 4200 }
+ *       400:
+ *         $ref: '#/components/responses/BadRequestError'
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
  */
 router.post('/', authenticate, authorize('forecast:generate'), storeScope, forecastController.createForecast);
 router.get('/', authenticate, authorize('forecast:view'), storeScope, forecastController.getForecast);
+router.post('/hourly', authenticate, authorize('forecast:generate'), storeScope, forecastController.createHourlyForecast);
 
 module.exports = router;

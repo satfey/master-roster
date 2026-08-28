@@ -253,10 +253,16 @@ const { storeScope } = require('../middleware/storeScope');
  *               minStaffPerShift:
  *                 type: number
  *                 format: float
+ *               monthlyLaborHours:
+ *                 type: number
+ *                 format: float
+ *                 nullable: true
+ *                 description: PHASE 2 store-level monthly labor-hour guideline (e.g. 1000) — unset means no store-level monthly cap is enforced
  *           example:
  *             targetProductivity: 1200
  *             targetColPercent: 22
  *             minStaffPerShift: 3
+ *             monthlyLaborHours: 1000
  *     responses:
  *       200:
  *         description: Labor guideline created or updated

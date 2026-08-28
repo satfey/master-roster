@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
 const { getAllowedStoreIds } = require('../middleware/storeScope');
 const { withDisplayStoreId } = require('../utils/storeDisplay');
+const { computeAllowedHours } = require('./laborGuidelineHelpers');
 
 /**
  * Builds the productivity dashboard payload for a single store: sales
@@ -14,10 +15,13 @@ const { withDisplayStoreId } = require('../utils/storeDisplay');
  */
 async function getStoreProductivity({ storeId, from, to }) {
   let salesQuery = supabase.from('sales_record').select('*').eq('store_id', storeId).order('sales_date', { ascending: true });
+  // daypart = 'FULL_DAY' only — see laborService.js for why hourly forecast
+  // breakdown rows must not be summed on top of the daily total.
   let forecastQuery = supabase
     .from('sales_forecast')
     .select('*')
     .eq('store_id', storeId)
+    .eq('daypart', 'FULL_DAY')
     .order('forecast_date', { ascending: true });
   let shiftQuery = supabase.from('shift').select('*, actual_hours(*), roster!inner(store_id)').eq('roster.store_id', storeId);
   if (from) {
@@ -52,8 +56,7 @@ async function getStoreProductivity({ storeId, from, to }) {
   const plannedHours = shifts.reduce((s, sh) => s + Number(sh.planned_hours), 0);
   const actualHours = shifts.reduce((s, sh) => s + (sh.actual_hours ? Number(sh.actual_hours.actual_hours) : 0), 0);
 
-  const targetProductivity = guideline?.target_productivity ? Number(guideline.target_productivity) : null;
-  const allowedHours = targetProductivity && forecastTotal ? Math.round(forecastTotal / targetProductivity) : null;
+  const allowedHours = computeAllowedHours(guideline, forecastTotal);
   const remainingHours = allowedHours !== null ? Math.max(allowedHours - actualHours, 0) : null;
   const laborPercent = allowedHours ? Math.round((actualHours / allowedHours) * 10000) / 100 : null;
   const productivity = actualHours > 0 ? Math.round((salesActual / actualHours) * 100) / 100 : 0;

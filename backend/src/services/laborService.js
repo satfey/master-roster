@@ -1,4 +1,5 @@
 const supabase = require('../config/supabase');
+const { computeAllowedHours } = require('./laborGuidelineHelpers');
 
 /**
  * Records actual worked hours for a single shift (clock-in/out or a manual
@@ -49,15 +50,17 @@ async function getStoreLaborSummary({ storeId, from, to }) {
     .maybeSingle(); // assumes one active guideline per store
   if (guidelineError) throw guidelineError;
 
-  let forecastQuery = supabase.from('sales_forecast').select('*').eq('store_id', storeId);
+  // daypart = 'FULL_DAY' only — hourly forecast breakdown rows (daypart = an
+  // hour label, see forecastService.generateHourlyForecast) cover the same
+  // sales and must not be summed on top of the daily total.
+  let forecastQuery = supabase.from('sales_forecast').select('*').eq('store_id', storeId).eq('daypart', 'FULL_DAY');
   if (from) forecastQuery = forecastQuery.gte('forecast_date', from);
   if (to) forecastQuery = forecastQuery.lte('forecast_date', to);
   const { data: forecasts, error: forecastsError } = await forecastQuery;
   if (forecastsError) throw forecastsError;
   const forecastTotal = forecasts.reduce((s, f) => s + Number(f.forecasted_sales), 0);
 
-  const targetProductivity = guideline?.target_productivity ? Number(guideline.target_productivity) : null;
-  const allowedHours = targetProductivity && forecastTotal ? Math.round(forecastTotal / targetProductivity) : null;
+  const allowedHours = computeAllowedHours(guideline, forecastTotal);
 
   const remainingHours = allowedHours !== null ? Math.max(allowedHours - actualHours, 0) : null;
   const laborPercent = allowedHours ? Math.round((actualHours / allowedHours) * 10000) / 100 : null;

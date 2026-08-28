@@ -144,8 +144,143 @@ const { storeScope } = require('../middleware/storeScope');
  *             example: { success: false, message: 'Shift not found', errors: null }
  *       500:
  *         $ref: '#/components/responses/ServerError'
+ * /labor/tiers:
+ *   get:
+ *     summary: List Sales/Budget -> Labor Hours guideline tiers
+ *     description: >
+ *       PHASE 2's business guideline for converting a store's daily
+ *       sales/budget level into an allowed labor-hour figure. Starts empty
+ *       — no values are hard-coded in application code; until tiers exist
+ *       here, roster generation falls back to sizing labor hours from
+ *       LaborGuideline.target_productivity alone (Phase 1 behavior).
+ *       weekday_labor_hours / weekend_labor_hours (Saturday/Sunday counts
+ *       as weekend) take priority over the legacy flat allowed_labor_hours
+ *       when both are set on a tier — a tier only needs one or the other,
+ *       not both. Pass storeId to include that store's own overrides plus
+ *       the global defaults (storeId omitted on a tier); omit storeId to
+ *       list every tier across every store.
+ *     tags: [Labor]
+ *     parameters:
+ *       - in: query
+ *         name: storeId
+ *         schema: { type: string, example: '1005' }
+ *     responses:
+ *       200:
+ *         description: Tiers
+ *         content:
+ *           application/json:
+ *             example:
+ *               success: true
+ *               message: OK
+ *               data:
+ *                 - id: 1c1c1c1c-1c1c-1c1c-1c1c-1c1c1c1c1c01
+ *                   store_id: null
+ *                   sales_min: 0
+ *                   sales_max: 6000
+ *                   allowed_labor_hours: 12
+ *                   weekday_labor_hours: 12
+ *                   weekend_labor_hours: 12
+ *                   level: 1
+ *                   standard_working_hours: null
+ *                   min_staff_count: null
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ *   post:
+ *     summary: Create a Sales/Budget -> Labor Hours tier
+ *     tags: [Labor]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [salesMin, salesMax]
+ *             description: Provide either allowedLaborHours, or both weekdayLaborHours and weekendLaborHours.
+ *             properties:
+ *               storeId: { type: string, nullable: true, description: 'Omit for a global default tier', example: '1005' }
+ *               salesMin: { type: number, example: 200000 }
+ *               salesMax: { type: number, example: 249999 }
+ *               allowedLaborHours: { type: number, nullable: true, description: 'Legacy flat figure for a tier that does not distinguish weekday/weekend' }
+ *               weekdayLaborHours: { type: number, nullable: true, example: 25 }
+ *               weekendLaborHours: { type: number, nullable: true, description: 'Saturday/Sunday', example: 28 }
+ *               level: { type: integer, nullable: true, description: 'The Master-Revise sheet''s "Level" column', example: 1 }
+ *               standardWorkingHours: { type: number, nullable: true, description: 'The Master-Revise sheet''s "Standard Working Day" column' }
+ *               minStaffCount: { type: integer, nullable: true, description: 'The Master-Revise sheet''s "Staff requirement" column' }
+ *           example:
+ *             salesMin: 200000
+ *             salesMax: 249999
+ *             weekdayLaborHours: 25
+ *             weekendLaborHours: 28
+ *     responses:
+ *       201:
+ *         description: Tier created
+ *       400:
+ *         $ref: '#/components/responses/BadRequestError'
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ * /labor/tiers/{id}:
+ *   put:
+ *     summary: Update a Sales/Budget -> Labor Hours tier
+ *     tags: [Labor]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               salesMin: { type: number }
+ *               salesMax: { type: number }
+ *               allowedLaborHours: { type: number, nullable: true }
+ *               weekdayLaborHours: { type: number, nullable: true }
+ *               weekendLaborHours: { type: number, nullable: true }
+ *               level: { type: integer, nullable: true }
+ *               standardWorkingHours: { type: number, nullable: true }
+ *               minStaffCount: { type: integer, nullable: true }
+ *     responses:
+ *       200:
+ *         description: Tier updated
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
+ *   delete:
+ *     summary: Delete a Sales/Budget -> Labor Hours tier
+ *     tags: [Labor]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Tier deleted
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
  */
 router.get('/', authenticate, authorize('labor:view'), storeScope, laborController.summary);
 router.put('/', authenticate, authorize('labor:input'), laborController.recordHours);
+router.get('/tiers', authenticate, authorize('labor:view'), laborController.listTiers);
+router.post('/tiers', authenticate, authorize('labor:input'), laborController.createTier);
+router.put('/tiers/:id', authenticate, authorize('labor:input'), laborController.updateTier);
+router.delete('/tiers/:id', authenticate, authorize('labor:input'), laborController.deleteTier);
 
 module.exports = router;

@@ -2,6 +2,13 @@ const { parseSalesReportWorkbook } = require('./excelParser');
 const { transformRows } = require('./transform');
 const repo = require('../../repositories/salesReportRepository');
 
+const LOG_PREFIX = '[SALES_REPORT_PREVIEW]';
+// A full month's report across every store in this system is ~17,600 rows —
+// far more than any reviewer will actually read before clicking "confirm".
+// This caps what the PREVIEW response sends back; commit still evaluates
+// (and inserts) every row, this limit only affects the preview payload.
+const PREVIEW_ROW_LIMIT = 200;
+
 /** First non-blank Excel store name seen for each Store Id, in file order — used as the name for any auto-created store. */
 function pickStoreNamesByCode(rows) {
   const names = new Map();
@@ -48,97 +55,149 @@ async function resolveStores(rows, createMissingStores) {
   return { storeMap, createdStores };
 }
 
-/** Parses + validates the workbook against the DB. Writes nothing except any auto-created stores when createMissingStores is true. */
+function buildRow(row, status, errors, store) {
+  return {
+    rowNumber: row.rowNumber,
+    status,
+    errors,
+    reportStoreId: row.reportStoreId,
+    storeId: row.storeId, // business-facing Store ID (e.g. "1001") — this IS store.id, the canonical primary key, not a UUID
+    willCreateStore: Boolean(store?.pending),
+    storeBuId: row.storeBuId,
+    storeName: row.storeName,
+    week: row.week,
+    reportDate: row.reportDate ? row.reportDate.toISOString().slice(0, 10) : null,
+
+    grossActual: row.grossActual,
+    grossBudget: row.grossBudget,
+    grossVariancePercent: row.grossVariancePercent,
+    grossActualLy: row.grossActualLy,
+    grossLyVariancePercent: row.grossLyVariancePercent,
+    grossActualMtd: row.grossActualMtd,
+    grossBudgetMtd: row.grossBudgetMtd,
+    grossMtdVariancePercent: row.grossMtdVariancePercent,
+    grossActualLyMtd: row.grossActualLyMtd,
+
+    docketActual: row.docketActual,
+    docketBudget: row.docketBudget,
+    docketVariancePercent: row.docketVariancePercent,
+    docketActualLy: row.docketActualLy,
+    docketLyVariancePercent: row.docketLyVariancePercent,
+
+    customerActual: row.customerActual,
+    customerBudget: row.customerBudget,
+    customerVariancePercent: row.customerVariancePercent,
+    customerActualLy: row.customerActualLy,
+    customerLyVariancePercent: row.customerLyVariancePercent,
+
+    otherSales: row.otherSales,
+    serviceCharge: row.serviceCharge,
+  };
+}
+
+/** Parses + validates the workbook against the DB. Writes nothing except any auto-created stores when createMissingStores is true. Every row is evaluated (commit needs the full set) — only the PREVIEW response truncates what it sends back, see previewSalesReportImport. */
 async function evaluateRows(buffer, createMissingStores) {
+  const t0 = Date.now();
   const { rows: rawRows } = await parseSalesReportWorkbook(buffer);
+  const tParsed = Date.now();
+  console.log(`${LOG_PREFIX} workbook read + rows extracted: ${tParsed - t0} ms (${rawRows.length} raw rows)`);
+
   const rows = transformRows(rawRows);
+  const tTransformed = Date.now();
+  console.log(`${LOG_PREFIX} rows transformed: ${tTransformed - tParsed} ms`);
 
   const { storeMap, createdStores } = await resolveStores(rows, createMissingStores);
-
   const storeIds = [...new Set([...storeMap.values()].map((s) => s.id))];
   const parsedDates = rows.filter((r) => r.reportDate).map((r) => r.reportDate);
   const existingKeys = await repo.findExistingReportKeys(storeIds, parsedDates);
+  const tDb = Date.now();
+  console.log(`${LOG_PREFIX} database (store lookup + duplicate check): ${tDb - tTransformed} ms (${storeIds.length} distinct stores, ${existingKeys.size} existing keys loaded)`);
 
-  const seenInFile = new Set();
+  // A (store, date) key can legitimately appear more than once in one file
+  // (a re-exported/appended report) — that's not an error, but only one
+  // write per key can happen. The LAST occurrence in file order wins, since
+  // the newly uploaded file is the source of truth and a later row is the
+  // more "recent" statement of that day's numbers within the file itself.
+  // This pass just records which rowNumber wins for each key; earlier
+  // occurrences are marked 'duplicate_in_file' below and never written.
+  const winningRowNumberByKey = new Map();
+  for (const row of rows) {
+    if (row.errors.length || row.storeId === null) continue;
+    const store = storeMap.get(row.storeId);
+    if (!store) continue;
+    winningRowNumberByKey.set(repo.recordKey(store.id, row.reportDate), row.rowNumber);
+  }
 
-  const previewRows = rows.map((row) => {
+  const resultRows = rows.map((row) => {
     const errors = [...row.errors];
     const store = row.storeId !== null ? storeMap.get(row.storeId) : null;
 
     let status = 'invalid';
     if (errors.length === 0 && store) {
       const key = repo.recordKey(store.id, row.reportDate);
-      if (existingKeys.has(key) || seenInFile.has(key)) {
-        status = 'duplicate';
+      if (winningRowNumberByKey.get(key) !== row.rowNumber) {
+        status = 'duplicate_in_file';
       } else {
-        status = 'valid';
-        seenInFile.add(key);
+        status = existingKeys.has(key) ? 'update' : 'new';
       }
     }
 
-    return {
-      rowNumber: row.rowNumber,
-      status,
-      errors,
-      reportStoreId: row.reportStoreId,
-      storeId: row.storeId, // business-facing Store ID (e.g. "1001") — this IS store.id, the canonical primary key, not a UUID
-      willCreateStore: Boolean(store?.pending),
-      storeBuId: row.storeBuId,
-      storeName: row.storeName,
-      week: row.week,
-      reportDate: row.reportDate ? row.reportDate.toISOString().slice(0, 10) : null,
-
-      grossActual: row.grossActual,
-      grossBudget: row.grossBudget,
-      grossVariancePercent: row.grossVariancePercent,
-      grossActualLy: row.grossActualLy,
-      grossLyVariancePercent: row.grossLyVariancePercent,
-      grossActualMtd: row.grossActualMtd,
-      grossBudgetMtd: row.grossBudgetMtd,
-      grossMtdVariancePercent: row.grossMtdVariancePercent,
-      grossActualLyMtd: row.grossActualLyMtd,
-
-      docketActual: row.docketActual,
-      docketBudget: row.docketBudget,
-      docketVariancePercent: row.docketVariancePercent,
-      docketActualLy: row.docketActualLy,
-      docketLyVariancePercent: row.docketLyVariancePercent,
-
-      customerActual: row.customerActual,
-      customerBudget: row.customerBudget,
-      customerVariancePercent: row.customerVariancePercent,
-      customerActualLy: row.customerActualLy,
-      customerLyVariancePercent: row.customerLyVariancePercent,
-
-      otherSales: row.otherSales,
-      serviceCharge: row.serviceCharge,
-    };
+    return buildRow(row, status, errors, store);
   });
+  const tValidated = Date.now();
+  console.log(`${LOG_PREFIX} validation (status per row): ${tValidated - tDb} ms`);
 
-  return { rows: previewRows, createdStores };
+  return { rows: resultRows, createdStores };
+}
+
+/** Invalid rows and in-file duplicates first (a preview's whole purpose is surfacing problems — these must never be truncated away), then as many of the rest as fit within PREVIEW_ROW_LIMIT, back in file order. */
+function buildPreviewRows(rows) {
+  const priority = rows.filter((r) => r.status === 'invalid' || r.status === 'duplicate_in_file');
+  const rest = rows.filter((r) => r.status !== 'invalid' && r.status !== 'duplicate_in_file');
+  const remaining = Math.max(PREVIEW_ROW_LIMIT - priority.length, 0);
+  return [...priority, ...rest.slice(0, remaining)].sort((a, b) => a.rowNumber - b.rowNumber);
 }
 
 function summarize({ rows, createdStores }) {
+  const tStart = Date.now();
+  const previewRows = buildPreviewRows(rows);
+  console.log(`${LOG_PREFIX} response build: ${Date.now() - tStart} ms (${rows.length} evaluated -> ${previewRows.length} returned)`);
+
+  const newRows = rows.filter((r) => r.status === 'new').length;
+  const updateRows = rows.filter((r) => r.status === 'update').length;
+
   return {
     totalRows: rows.length,
-    validRows: rows.filter((r) => r.status === 'valid').length,
+    newRows, // will be INSERTed
+    updateRows, // (store_id, report_date) already exists — will be UPDATEd with this file's data
+    validRows: newRows + updateRows, // total rows that will actually be written, insert + update combined
     invalidRows: rows.filter((r) => r.status === 'invalid').length,
-    duplicateRows: rows.filter((r) => r.status === 'duplicate').length,
+    duplicateInFileRows: rows.filter((r) => r.status === 'duplicate_in_file').length, // same key repeated within this file — only the last occurrence is written
     newStoreCount: new Set(rows.filter((r) => r.willCreateStore).map((r) => r.reportStoreId)).size,
-    rows,
+    previewRowCount: previewRows.length, // how many of totalRows are actually included below, since previewRows is capped
+    previewRows,
   };
 }
 
 async function previewSalesReportImport(buffer) {
-  return summarize(await evaluateRows(buffer, false));
+  const t0 = Date.now();
+  const result = summarize(await evaluateRows(buffer, false));
+  console.log(`${LOG_PREFIX} total (parse through response build): ${Date.now() - t0} ms`);
+  return result;
 }
 
 async function commitSalesReportImport(buffer, userId) {
   const { rows, createdStores } = await evaluateRows(buffer, true);
-  const validRows = rows.filter((r) => r.status === 'valid');
+  // 'new' (no existing DB row for this store+date) and 'update' (one already
+  // exists) are both written — the upsert below decides INSERT vs UPDATE per
+  // row via ON CONFLICT. 'duplicate_in_file' rows are never written: a
+  // duplicate key within this same file was already resolved down to a
+  // single winning row during evaluateRows.
+  const writableRows = rows.filter((r) => r.status === 'new' || r.status === 'update');
 
   const sourceType = await repo.getSalesReportSourceType();
-  const records = validRows.map((r) => ({
+  const importedAt = new Date().toISOString();
+  const records = writableRows.map((r) => ({
     store_id: r.storeId,
     report_store_id: r.reportStoreId,
     store_bu_id: r.storeBuId,
@@ -173,20 +232,20 @@ async function commitSalesReportImport(buffer, userId) {
 
     source_type_id: sourceType.id,
     entered_by: userId,
+    updated_at: importedAt, // refreshed on every write, insert or update, to record when this data was last imported — created_at is deliberately absent here, see upsertRecords
   }));
 
-  const imported = await repo.insertRecords(records);
+  const imported = await repo.upsertRecords(records);
 
   return {
     total: rows.length,
-    imported,
-    skippedDuplicates: rows.filter((r) => r.status === 'duplicate').length,
+    imported, // total rows written this commit, insert + update combined
+    inserted: writableRows.filter((r) => r.status === 'new').length,
+    updated: writableRows.filter((r) => r.status === 'update').length,
+    skippedDuplicatesInFile: rows.filter((r) => r.status === 'duplicate_in_file').length,
     failed: rows.filter((r) => r.status === 'invalid').map((r) => ({ rowNumber: r.rowNumber, reportStoreId: r.reportStoreId, errors: r.errors })),
     storesCreated: createdStores.map((s) => ({ id: s.id, storeId: s.id, storeCode: s.storeCode, name: s.name })),
   };
 }
 
 module.exports = { previewSalesReportImport, commitSalesReportImport };
-
-
-
