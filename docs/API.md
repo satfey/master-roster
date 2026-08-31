@@ -33,9 +33,14 @@ Retrieve stored `SalesForecast` rows. **Permission (future)**: `forecast:view`
 
 ## Roster (auto schedule generator)
 
-### `POST /roster/generate`
-Auto-generate a weekly roster (shifts) within the labor-hour budget.
-**Body**: `{ "storeId": "uuid", "weekStart": "2026-07-27", "forecastedSales": 700000 }`
+### `POST /roster/auto-generate`
+The only supported roster-generation endpoint (the earlier fixed-template
+`POST /roster/generate` has been removed). Auto-generates a DRAFT roster over
+a date range: Full-time shifts are exactly 8 working hours + a 1-hour meal
+break (9-hour clock span), Part-time is 4-6 hours, opening (09:00) and
+closing (22:00) coverage are guaranteed, and staffing is sized from the
+sales forecast, labor guideline, and monthly capacity — never auto-approved.
+**Body**: `{ "storeId": "uuid", "startDate": "2026-07-27", "endDate": "2026-08-02", "regenerate": false }`
 **Permission (future)**: `schedule:generate`
 
 ### `GET /roster?storeId=...`

@@ -1,21 +1,20 @@
 import React from "react";
-import * as XLSX from "xlsx";
 import { UploadCloud } from "lucide-react";
 import { Card, KpiTile, Btn, th, td, inp } from "../components/ui.jsx";
 import { monthDates, fmtNum, excelDateToStr } from "../lib/calc.js";
+import { readWorksheetAsObjects } from "../lib/excelImport.js";
 
 export default function HoursTab({ role, month, employees, actual, guidelineHours, onActualChange }) {
   const editable = role === "store_manager";
   const dates = monthDates(month);
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files[0];
+    e.target.value = "";
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const wb = XLSX.read(ev.target.result, { type: "array" });
-      const sheet = wb.Sheets[wb.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const rows = await readWorksheetAsObjects(arrayBuffer);
       const next = { ...actual };
       rows.forEach((row) => {
         const keys = Object.keys(row);
@@ -31,9 +30,9 @@ export default function HoursTab({ role, month, employees, actual, guidelineHour
         }
       });
       onActualChange(next);
-    };
-    reader.readAsArrayBuffer(file);
-    e.target.value = "";
+    } catch (err) {
+      console.error("Failed to read hours Excel file:", err);
+    }
   };
 
   const totalActualHours = Object.values(actual).reduce((sum, dayMap) => sum + Object.values(dayMap || {}).reduce((a, b) => a + b, 0), 0);

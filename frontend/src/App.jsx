@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from "react";
-import { Store, Users, CalendarDays, TrendingUp, ClipboardCheck, LayoutDashboard, Settings, Clock, UploadCloud } from "lucide-react";
+import { Store, Users, CalendarDays, TrendingUp, ClipboardCheck, LayoutDashboard, Settings, Clock, UploadCloud, Wand2 } from "lucide-react";
 import { Select } from "./components/ui.jsx";
 import { loadKey, saveKey } from "./lib/storage.js";
 import { todayMonth, calcGuidelineHours, forecastMonth, generateSchedule } from "./lib/calc.js";
@@ -7,6 +7,7 @@ import { todayMonth, calcGuidelineHours, forecastMonth, generateSchedule } from 
 import SalesTab from "./pages/SalesTab.jsx";
 import SalesImportTab from "./pages/SalesImportTab.jsx";
 import RosterTab from "./pages/RosterTab.jsx";
+import AutoRosterTab from "./pages/AutoRosterTab.jsx";
 import ApproveTab from "./pages/ApproveTab.jsx";
 import HoursTab from "./pages/HoursTab.jsx";
 import DashboardTab from "./pages/DashboardTab.jsx";
@@ -22,6 +23,7 @@ const TABS = [
   { key: "sales", label: "ยอดขาย & พยากรณ์", icon: TrendingUp },
   { key: "salesImport", label: "นำเข้ายอดขาย (Excel)", icon: UploadCloud },
   { key: "roster", label: "จัดกะพนักงาน", icon: CalendarDays },
+  { key: "autoRoster", label: "Auto Generate (Test)", icon: Wand2 },
   { key: "approve", label: "อนุมัติกะ", icon: ClipboardCheck },
   { key: "hours", label: "ชั่วโมงทำงานจริง", icon: Clock },
   { key: "dashboard", label: "Dashboard / KPI", icon: LayoutDashboard },
@@ -228,6 +230,7 @@ export default function App() {
             }}
           />
         )}
+        {activeTab === "autoRoster" && <AutoRosterTab />}
         {activeTab === "approve" && (
           <ApproveTab
             role={role}

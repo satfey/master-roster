@@ -6,102 +6,6 @@ const { storeScope } = require('../middleware/storeScope');
 
 /**
  * @swagger
- * /roster/generate:
- *   post:
- *     summary: Auto-generate a weekly roster (shifts) within the labor-hour budget
- *     tags: [Roster]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [storeId, weekStart]
- *             properties:
- *               storeId:
- *                 type: string
- *                 format: uuid
- *               weekStart:
- *                 type: string
- *                 format: date
- *                 description: Start date (Monday) of the week to generate
- *               forecastedSales:
- *                 type: number
- *                 format: float
- *                 description: Used with the store's targetProductivity to derive the allowed labor hours
- *               allowedHoursOverride:
- *                 type: number
- *                 format: float
- *                 nullable: true
- *                 description: Skip the forecast-derived budget and cap total scheduled hours directly
- *           example:
- *             storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *             weekStart: 2026-08-10
- *             forecastedSales: 45000
- *     responses:
- *       201:
- *         description: Roster generated
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/ApiResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       allOf:
- *                         - $ref: '#/components/schemas/Roster'
- *                         - type: object
- *                           properties:
- *                             shift:
- *                               type: array
- *                               items:
- *                                 allOf:
- *                                   - $ref: '#/components/schemas/Shift'
- *                                   - type: object
- *                                     properties:
- *                                       employee: { $ref: '#/components/schemas/Employee' }
- *                             allowedHours: { type: number }
- *                             totalScheduledHours: { type: number }
- *             example:
- *               success: true
- *               message: Roster generated
- *               data:
- *                 id: f69dde10-f1b2-49e5-97ed-caac5809b7ca
- *                 store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *                 week_start: '2026-08-09'
- *                 status: DRAFT
- *                 approved_by: null
- *                 approved_at: null
- *                 shift:
- *                   - id: 564ffd50-74cc-45cb-81b8-f682f881b732
- *                     roster_id: f69dde10-f1b2-49e5-97ed-caac5809b7ca
- *                     employee_id: '000123'
- *                     shift_date: '2026-08-09'
- *                     start_time: '08:00:00'
- *                     end_time: '16:00:00'
- *                     planned_hours: 7
- *                     employee:
- *                       id: '000123'
- *                       store_id: '1001'
- *                       first_name: Somchai
- *                       last_name: Jaidee
- *                       position: Cashier
- *                       is_active: true
- *                 allowedHours: 38
- *                 totalScheduledHours: 35
- *       400:
- *         description: No active employees found for this store.
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/ApiError' }
- *             example: { success: false, message: 'No active employees found for this store', errors: null }
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       403:
- *         $ref: '#/components/responses/ForbiddenError'
- *       500:
- *         $ref: '#/components/responses/ServerError'
  * /roster:
  *   get:
  *     summary: List generated rosters for a store
@@ -583,7 +487,6 @@ const { storeScope } = require('../middleware/storeScope');
  *       500:
  *         $ref: '#/components/responses/ServerError'
  */
-router.post('/generate', authenticate, authorize('schedule:generate'), storeScope, rosterController.generate);
 router.post('/auto-generate', authenticate, authorize('schedule:generate'), storeScope, rosterController.autoGenerate);
 router.post('/validate', authenticate, authorize('schedule:generate'), storeScope, rosterController.validate);
 router.post('/actual-hours', authenticate, authorize('labor:input'), storeScope, rosterController.recordActualHours);

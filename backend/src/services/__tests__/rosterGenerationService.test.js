@@ -1,9 +1,9 @@
-// rosterGenerationService.js pulls in forecastService and rosterService
-// (real, not mocked, so the actual forecast math and hoursBetween logic
-// run) plus rosterValidationService (also real). Only the repositories —
-// the actual Supabase boundary — are mocked, matching the pattern used
-// elsewhere in this codebase (e.g. dashboardService.test.js).
-jest.mock('../../config/supabase', () => ({})); // rosterService.js requires this directly at module load
+// rosterGenerationService.js pulls in forecastService (real, not mocked, so
+// the actual forecast math runs) plus rosterValidationService (also real).
+// Only the repositories — the actual Supabase boundary — are mocked,
+// matching the pattern used elsewhere in this codebase (e.g.
+// dashboardService.test.js).
+jest.mock('../../config/supabase', () => ({})); // forecastService.js requires this directly at module load
 
 jest.mock('../../repositories/rosterRepository', () => ({
   findGuideline: jest.fn(),
@@ -562,5 +562,96 @@ describe('rosterGenerationService.generateDraftRoster — Full-time working hour
     expect(maxConsecutiveRun(soloDates)).toBeLessThanOrEqual(6);
     // The 7-day run (2026-07-28..2026-08-03) must have a rest day somewhere in it.
     expect(soloDates).not.toEqual(expect.arrayContaining(['2026-07-28', '2026-07-29', '2026-07-30', '2026-07-31', '2026-08-01', '2026-08-02', '2026-08-03']));
+  });
+});
+
+describe('regression guard: Full-time must be exactly 8 WORKING hours, never 7 — the break is not part of planned_hours', () => {
+  test('a Full-time opening shift is exactly 09:00-18:00 with break 13:00-14:00 and planned_hours 8', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1')] });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const ftShift = store.shifts.find((s) => ['FT1', 'FT2'].includes(s.employee_id) && s.start_time === '09:00');
+    expect(ftShift).toMatchObject({ start_time: '09:00', end_time: '18:00', break_start_time: '13:00', break_end_time: '14:00', planned_hours: 8 });
+  });
+
+  test('the break is exactly 1 hour on every Full-time shift', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: Array.from({ length: 5 }, (_, i) => makeEmployee(`FT${i}`)) });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(store.shifts.length).toBeGreaterThan(0);
+    for (const s of store.shifts) {
+      const breakStart = Number(s.break_start_time.slice(0, 2));
+      const breakEnd = Number(s.break_end_time.slice(0, 2));
+      expect(breakEnd - breakStart).toBe(1);
+    }
+  });
+
+  test('a Full-time shift NEVER has planned_hours 7 — every generated Full-time shift is exactly 8, regardless of guideline, demand, or day', async () => {
+    // Sweep several distinct scenarios that previously could have produced a 7h clock-span-minus-break
+    // miscalculation (no tier, a tight tier, a generous tier, low demand, high demand).
+    const scenarios = [
+      { forecast: 20000, tiers: [] },
+      { forecast: 1000, tiers: [{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 12 }] },
+      { forecast: 1000, tiers: [{ id: 't2', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 4 }] },
+      { forecast: 5000, tiers: [] },
+    ];
+
+    for (const scenario of scenarios) {
+      jest.clearAllMocks();
+      mockNoBudgetOverrides();
+      mockFlatForecastHistory(scenario.forecast);
+      laborBudgetRepo.findGuidelineTiers.mockResolvedValue(scenario.tiers);
+      const store = createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2')] });
+
+      await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+      const ftShifts = store.shifts.filter((s) => ['FT1', 'FT2'].includes(s.employee_id));
+      for (const s of ftShifts) {
+        expect(s.planned_hours).not.toBe(7);
+        expect(s.planned_hours).toBe(8);
+      }
+    }
+  });
+
+  test('Part-time remains 4-6 hours, unaffected by the Full-time break fix', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`)) });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(store.shifts.length).toBeGreaterThan(0);
+    expect(store.shifts.every((s) => s.planned_hours >= 4 && s.planned_hours <= 6)).toBe(true);
+    expect(store.shifts.every((s) => s.break_start_time === null)).toBe(true);
+  });
+
+  test('opening (09:00) and closing (22:00) coverage both still hold with the 9-hour Full-time clock span', async () => {
+    mockFlatForecastHistory(20000);
+    createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1')] });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.validation.openingCoverageOk).toBe(true);
+    expect(result.validation.closingCoverageOk).toBe(true);
+  });
+
+  test('monthly capacity is consumed using WORKING hours (8), not the 9-hour clock span, for a Full-time shift', async () => {
+    mockFlatForecastHistory(1000);
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 8 }]);
+    createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: 1000 },
+      employees: [makeEmployee('FT1')],
+    });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // A single Full-time shift (09:00-18:00, 9 clock hours, 1h break) must consume exactly 8h of
+    // monthly capacity — 9h would mean the break was wrongly counted as labor.
+    expect(result.totalLaborHours).toBe(8);
+    expect(result.validation.monthlyCapacity[0].hoursUsedOrCommitted).toBe(8);
+    expect(result.validation.monthlyCapacity[0].remainingHours).toBe(992);
   });
 });

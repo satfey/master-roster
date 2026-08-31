@@ -38,24 +38,24 @@ graph LR
 sequenceDiagram
     participant M as Store Manager (UI)
     participant API as Express API
-    participant S as rosterService
-    participant DB as PostgreSQL (Prisma)
+    participant S as rosterGenerationService
+    participant DB as Supabase (PostgreSQL)
 
-    M->>API: POST /roster/generate {storeId, weekStart, forecastedSales}
+    M->>API: POST /roster/auto-generate {storeId, startDate, endDate, regenerate}
     API->>API: authenticate (fixed identity) + authorize(schedule:generate) + storeScope
-    API->>S: generateRoster(params)
-    S->>DB: fetch store's LaborGuideline + active employees
+    API->>S: generateDraftRoster(params)
+    S->>DB: fetch store's LaborGuideline, active employees, hourly forecast, monthly capacity
     DB-->>S: rows
-    S->>S: allowedHours = forecastedSales / guideline.targetProductivity
-    loop each day x fixed shift window (Morning/Afternoon/Closing)
-        S->>S: filter not-double-booked, under 48h/week cap
-        S->>S: pick employee with fewest hours assigned so far (fair distribution)
-        S->>S: assign if within labor budget
+    S->>S: size staffing per hour from the forecast, productivity floor, and daily/monthly budgets
+    loop each day
+        S->>S: guarantee opening (09:00) + closing (22:00) coverage, then fill to the operational minimum
+        S->>S: Full-time = 8 working hours + 1h break (9h clock span); Part-time = 4-6h
+        S->>S: enforce weekly hours, 6-consecutive-day rest, no double booking, monthly capacity
     end
-    S->>DB: create Roster + Shift rows
+    S->>DB: replace Shift rows for the range (create/reuse one Roster row per ISO week)
     DB-->>S: roster with shifts
-    S-->>API: roster
-    API-->>M: 201 { roster }
+    S-->>API: result (rosterIds, shifts, validation)
+    API-->>M: 201 { result } — status always DRAFT, never auto-approved
 ```
 
 ## Sequence Diagram — Recording Actual Hours

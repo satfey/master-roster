@@ -1,4 +1,3 @@
-const { generateRoster } = require('../services/rosterService');
 const { generateDraftRoster } = require('../services/rosterGenerationService');
 const { validateRoster } = require('../services/rosterValidationService');
 const { computeMonthlyCapacity } = require('../services/monthlyCapacityService');
@@ -8,23 +7,6 @@ const { success, failure } = require('../utils/apiResponse');
 const { logActivity } = require('../utils/activityLogger');
 
 const ROSTER_SHIFTS_SELECT = '*, shift(*, employee(*), actual_hours(*))';
-
-async function generate(req, res) {
-  const { storeId, weekStart, forecastedSales, allowedHoursOverride, regenerate } = req.body;
-
-  const roster = await generateRoster({
-    storeId,
-    weekStart,
-    forecastedSales,
-    allowedHoursOverride,
-    approvedBy: null,
-    regenerate: !!regenerate,
-  });
-
-  await logActivity({ userId: req.user.id, action: 'GENERATE_ROSTER', storeId, details: { rosterId: roster.id, regenerate: !!regenerate } });
-
-  return success(res, roster, 'Roster generated', 201);
-}
 
 async function autoGenerate(req, res) {
   const { storeId, startDate, endDate, regenerate } = req.body;
@@ -136,4 +118,4 @@ async function remove(req, res) {
   return success(res, null, 'Roster deleted');
 }
 
-module.exports = { generate, autoGenerate, validate, recordActualHours, listActualHours, capacity, list, getOne, update, remove };
+module.exports = { autoGenerate, validate, recordActualHours, listActualHours, capacity, list, getOne, update, remove };

@@ -1,8 +1,8 @@
 import React, { useState } from "react";
-import * as XLSX from "xlsx";
 import { TrendingUp, UploadCloud, AlertTriangle, CheckCircle2 } from "lucide-react";
 import { Card, KpiTile, Btn, th, td, inp } from "../components/ui.jsx";
 import { monthDates, thaiWeekday, fmtNum, excelDateToStr } from "../lib/calc.js";
+import { readWorksheetAsObjects } from "../lib/excelImport.js";
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from "recharts";
 
 export default function SalesTab({ role, month, sales, target, forecast, totalActualSales, guidelineHours, onSalesChange, onTargetChange }) {
@@ -10,37 +10,32 @@ export default function SalesTab({ role, month, sales, target, forecast, totalAc
   const dates = monthDates(month);
   const [importMsg, setImportMsg] = useState("");
 
-  const handleFile = (e) => {
+  const handleFile = async (e) => {
     const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      try {
-        const wb = XLSX.read(ev.target.result, { type: "array" });
-        const sheet = wb.Sheets[wb.SheetNames[0]];
-        const rows = XLSX.utils.sheet_to_json(sheet, { defval: null });
-        const newSales = { ...sales };
-        let count = 0;
-        rows.forEach((row) => {
-          const keys = Object.keys(row);
-          const dateKey = keys.find((k) => /date|วันที่/i.test(k));
-          const salesKey = keys.find((k) => /sale|ยอดขาย|revenue/i.test(k));
-          if (!dateKey || !salesKey) return;
-          const d = excelDateToStr(row[dateKey]);
-          const v = Number(row[salesKey]);
-          if (d && d.startsWith(month) && !isNaN(v)) {
-            newSales[d] = v;
-            count++;
-          }
-        });
-        onSalesChange(newSales);
-        setImportMsg(count > 0 ? `นำเข้าสำเร็จ ${count} วัน` : "ไม่พบข้อมูลที่ตรงกับเดือนนี้ ตรวจสอบหัวคอลัมน์ (date/วันที่, sales/ยอดขาย)");
-      } catch (err) {
-        setImportMsg("อ่านไฟล์ไม่สำเร็จ กรุณาตรวจสอบรูปแบบไฟล์");
-      }
-    };
-    reader.readAsArrayBuffer(file);
     e.target.value = "";
+    if (!file) return;
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const rows = await readWorksheetAsObjects(arrayBuffer);
+      const newSales = { ...sales };
+      let count = 0;
+      rows.forEach((row) => {
+        const keys = Object.keys(row);
+        const dateKey = keys.find((k) => /date|วันที่/i.test(k));
+        const salesKey = keys.find((k) => /sale|ยอดขาย|revenue/i.test(k));
+        if (!dateKey || !salesKey) return;
+        const d = excelDateToStr(row[dateKey]);
+        const v = Number(row[salesKey]);
+        if (d && d.startsWith(month) && !isNaN(v)) {
+          newSales[d] = v;
+          count++;
+        }
+      });
+      onSalesChange(newSales);
+      setImportMsg(count > 0 ? `นำเข้าสำเร็จ ${count} วัน` : "ไม่พบข้อมูลที่ตรงกับเดือนนี้ ตรวจสอบหัวคอลัมน์ (date/วันที่, sales/ยอดขาย)");
+    } catch (err) {
+      setImportMsg("อ่านไฟล์ไม่สำเร็จ กรุณาตรวจสอบรูปแบบไฟล์");
+    }
   };
 
   const missingDays = dates.filter((d) => typeof sales[d] !== "number").length;

@@ -5,7 +5,7 @@
 | Module | Cases |
 |--------|-------|
 | `forecastService` | SMA averages correctly over window; linear regression recovers a known slope/intercept on synthetic data; handles empty/1-row history without throwing; each run creates exactly one `ForecastModelRun` and the correct number of `SalesForecast` rows. |
-| `rosterService` | Never exceeds the derived `allowedHours`; never double-books an employee on the same day; caps an individual employee at 48h/week; distributes fairly (fewest-hours-first) across active employees; handles a store with zero forecasted sales / no `LaborGuideline` gracefully (`allowedHours` falls back to unrestricted or 0, per intended behavior — confirm which). |
+| `rosterGenerationService` | Never exceeds the daily labor-hour budget or store monthly capacity; never double-books an employee on the same day; Full-time is always exactly 8 working hours + 1h break (9h clock span), Part-time always 4-6h; guarantees opening/closing coverage; caps an individual employee at their weekly hours and at 6 consecutive working days; handles a store with zero forecasted sales / no `LaborGuideline` gracefully. |
 | `laborService` | `recordActualHours` correctly flags `isOverPlanned` when actual > planned; upsert semantics (calling twice for the same shift updates rather than duplicates, since `ActualHours.shiftId` is unique). |
 | `dashboardService` | Productivity calculation matches `salesActual / actualHours`; handles stores with zero actual hours without dividing by zero; `getCompanyDashboard` respects `getAllowedStoreIds` scoping once real per-user roles exist. |
 | `importService` | Valid rows create records correctly; unknown store names are collected as row-level errors without aborting the whole import; sales imports are tagged with the `EXCEL_IMPORT` source type. |
@@ -13,7 +13,7 @@
 ## 2. Integration Tests (Supertest + test DB)
 
 - Every route currently succeeds without a token (login deferred) — verify this is intentional in your test environment and add a `SKIP_AUTH=false` style guard before any real deployment.
-- `POST /roster/generate` — with a fixture store/employees/guideline, assert `totalScheduledHours <= allowedHours`.
+- `POST /roster/auto-generate` — with a fixture store/employees/guideline, assert `totalLaborHours` never exceeds the daily labor-hour budget or monthly capacity, and every Full-time shift has `planned_hours === 8`.
 - `PUT /labor` — recording hours above the shift's planned hours returns a warning message and `isOverPlanned: true`.
 - Excel import endpoints — malformed rows return partial success with an `errors` array; well-formed files fully import; store-name matching is case/whitespace sensitive (document this or add normalization if it causes real-world friction).
 - `GET /dashboard` and `GET /dashboard/store/:id` — verify productivity, labor %, and remaining hours match hand-calculated expected values for a small fixture dataset.

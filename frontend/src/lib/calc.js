@@ -26,6 +26,12 @@ export const fmtNum = (n, d = 0) =>
   (n || 0).toLocaleString("th-TH", { maximumFractionDigits: d, minimumFractionDigits: d });
 
 export const excelDateToStr = (val) => {
+  // exceljs (unlike the old xlsx-based reader without cellDates) hands back
+  // a native Date for genuinely date-formatted cells, not a raw serial.
+  if (val instanceof Date) {
+    if (isNaN(val.getTime())) return null;
+    return `${val.getFullYear()}-${pad2(val.getMonth() + 1)}-${pad2(val.getDate())}`;
+  }
   if (typeof val === "number") {
     const d = new Date(Math.round((val - 25569) * 86400 * 1000));
     return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;

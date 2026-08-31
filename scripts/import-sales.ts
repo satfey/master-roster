@@ -18,7 +18,7 @@ async function main(): Promise<void> {
   const resolvedPath = path.resolve(process.cwd(), filePath);
   console.log(`Reading sales data from: ${resolvedPath}\n`);
 
-  const preview = buildPreview(resolvedPath);
+  const preview = await buildPreview(resolvedPath);
   logPreviewTable(preview);
   logPreviewSummary(preview);
 

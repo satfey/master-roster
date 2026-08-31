@@ -1,19 +1,21 @@
 {
   "scripts": {
-    "import:sales": "tsx scripts/import-sales.ts"
+    "import:sales": "tsx scripts/import-sales.ts",
+    "test": "vitest run"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.4",
     "@supabase/supabase-js": "^2.111.0",
     "axios": "^1.7.9",
     "dotenv": "^16.4.7",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
-    "multer": "^2.2.0",
-    "xlsx": "^0.18.5"
+    "multer": "^2.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
     "tsx": "^4.19.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
   }
 }

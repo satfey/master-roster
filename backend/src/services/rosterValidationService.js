@@ -251,10 +251,21 @@ async function validateRoster({ storeId, startDate, endDate }) {
     const type = employee ? employeeShiftType(employee) : null;
 
     if (type === 'FULL_TIME') {
-      if (plannedHours !== FULL_TIME_SHIFT_HOURS) {
-        ftWorkingHoursViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, plannedHours });
-      }
       const breakHours = s.break_start_time && s.break_end_time ? Number(s.break_end_time.slice(0, 2)) - Number(s.break_start_time.slice(0, 2)) : null;
+      // Independent cross-check, not just "planned_hours == 8": working hours must actually equal
+      // clock span minus the break, so a shift whose start/end/break don't add up to its stored
+      // planned_hours is caught even if planned_hours happens to equal 8 by coincidence (or a stale/
+      // hand-edited row has a clock span that doesn't match its own break window). Reported as a
+      // single entry per shift — a wrong planned_hours and its arithmetic explanation are one fact,
+      // not two separate violations.
+      const impliedWorkingHours = breakHours != null ? endHourOf(s) - startHourOf(s) - breakHours : null;
+      if (plannedHours !== FULL_TIME_SHIFT_HOURS || (impliedWorkingHours != null && impliedWorkingHours !== plannedHours)) {
+        const reason =
+          impliedWorkingHours != null && impliedWorkingHours !== plannedHours
+            ? `clock span (${endHourOf(s) - startHourOf(s)}h) minus break (${breakHours}h) = ${impliedWorkingHours}h, but planned_hours is ${plannedHours}h`
+            : undefined;
+        ftWorkingHoursViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, plannedHours, ...(reason ? { reason } : {}) });
+      }
       if (breakHours == null) {
         ftBreakViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, reason: 'missing meal break' });
       } else if (breakHours !== FULL_TIME_BREAK_HOURS) {

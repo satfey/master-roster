@@ -6,8 +6,8 @@ import { parseRow } from './parser';
 import { FailedRow, ImportSummary, PreviewRow } from './types';
 
 /** Reads and validates the whole file without sending anything to the backend. */
-export function buildPreview(filePath: string): PreviewRow[] {
-  const { rows } = readExcelRows(filePath);
+export async function buildPreview(filePath: string): Promise<PreviewRow[]> {
+  const { rows } = await readExcelRows(filePath);
   const preview: PreviewRow[] = [];
 
   for (let i = 0; i < rows.length; i++) {
