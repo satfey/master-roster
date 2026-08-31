@@ -138,6 +138,35 @@ describe('laborBudgetService.computeDailyLaborHoursBudget', () => {
   });
 });
 
+describe('laborBudgetService.matchTier — the new flat Sales/Day -> Standard Working Hours guideline (MON-FRI = SAT-SUN, no weekday/weekend split needed)', () => {
+  // One test per bracket of the given table — a flat allowed_labor_hours tier (no
+  // weekday_labor_hours/weekend_labor_hours) already resolves to the same hour value
+  // on both a weekday and a weekend date, so no code change was needed for "MON-FRI
+  // and SAT-SUN are equal in this table" — this locks in the exact given values.
+  test.each([
+    [0, 250000, 100000, 28],
+    [250001, 330000, 300000, 26],
+    [330001, 410000, 370000, 27],
+    [410001, 500000, 450000, 28],
+    [500001, 540000, 520000, 33],
+    [540001, 620000, 580000, 34],
+    [620001, 660000, 640000, 35],
+    [660001, 700000, 680000, 36],
+    [700001, 780000, 740000, 38],
+    [780001, 870000, 820000, 43],
+    [870001, 950000, 900000, 43],
+    [950001, 1500000, 1200000, 43],
+  ])('sales %i-%i (sample %i) -> %i standard working hours/day, identical on a weekday and a weekend date', (salesMin, salesMax, sample, expectedHours) => {
+    const tiers = [tier({ salesMin, salesMax, allowedLaborHours: expectedHours })];
+
+    const weekday = matchTier(tiers, sample, { isWeekend: false });
+    const weekend = matchTier(tiers, sample, { isWeekend: true });
+
+    expect(weekday.allowedLaborHours).toBe(expectedHours);
+    expect(weekend.allowedLaborHours).toBe(expectedHours);
+  });
+});
+
 describe('laborBudgetService.computeLaborCostBudget', () => {
   test('2. labor budget constraint: laborBudget = salesLevel x (target_col_percent / 100)', () => {
     const result = computeLaborCostBudget({ salesLevel: 50000, guideline: { target_col_percent: 15 } });

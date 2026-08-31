@@ -1,7 +1,9 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { CalendarDays, Wand2, RefreshCcw, Clock } from "lucide-react";
 import { Card, KpiTile, Btn, th, td, inp } from "../components/ui.jsx";
 import { apiGet, apiPost } from "../lib/api.js";
+import { loadKey, saveKey } from "../lib/storage.js";
+import { resolveRoster, forceRegenerateRoster, fetchExistingShiftsForRange } from "../lib/autoRoster.js";
 
 /**
  * Test/visualization screen only — NOT the production roster UI.
@@ -13,6 +15,13 @@ import { apiGet, apiPost } from "../lib/api.js";
  * rosters it touched via the existing GET /roster/:id and renders exactly
  * what comes back — it never computes, guesses, or invents a shift.
  *
+ * "Auto Generate" never silently overwrites an already-generated roster: it
+ * first checks for existing shifts in the requested range via the existing
+ * GET /roster?storeId= (reused, not a new endpoint — filtered client-side
+ * to the requested date range) and just displays those if found. Only
+ * "Regenerate" (a separate button, behind a confirmation) sends
+ * `regenerate: true` and replaces what's there.
+ *
  * The "used / remaining hours" panel and the per-day actual-hours input are
  * the same reuse: the store manager's entry is sent to the existing
  * POST /roster/actual-hours, and the totals shown (monthly guideline, hours
@@ -20,6 +29,8 @@ import { apiGet, apiPost } from "../lib/api.js";
  * GET /roster/capacity (computeMonthlyCapacity) — no deduction/remaining-hours
  * math happens in this component.
  */
+
+const LAST_QUERY_KEY = "autoRosterTab:lastQuery";
 
 function toHHMM(time) {
   return time ? time.slice(0, 5) : null;
@@ -76,15 +87,28 @@ function ShiftCell({ shift }) {
   );
 }
 
+function RosterStatusBadge({ status }) {
+  const map = {
+    existing: { bg: "#e0f2fe", color: "#0369a1", label: "Existing roster" },
+    generated: { bg: "#dcfce7", color: "#15803d", label: "Newly generated" },
+  };
+  const s = map[status];
+  if (!s) return null;
+  return (
+    <span style={{ background: s.bg, color: s.color, fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 999 }}>{s.label}</span>
+  );
+}
+
 export default function AutoRosterTab() {
   const [storeId, setStoreId] = useState("");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [regenerate, setRegenerate] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const [result, setResult] = useState(null);
-  const [shifts, setShifts] = useState([]); // real shift rows fetched back from the backend after generation
+  const [result, setResult] = useState(null); // set only right after a generate/regenerate call — never for the "existing" path
+  const [rosterStatus, setRosterStatus] = useState(null); // 'existing' | 'generated' | null
+  const [confirmingRegenerate, setConfirmingRegenerate] = useState(false);
+  const [shifts, setShifts] = useState([]); // real shift rows fetched back from the backend
   const [capacity, setCapacity] = useState(null); // raw GET /roster/capacity response
   const [actualHoursInput, setActualHoursInput] = useState({}); // date -> string, the manager's editable entry
   const [savingActualHours, setSavingActualHours] = useState(false);
@@ -100,31 +124,78 @@ export default function AutoRosterTab() {
     setActualHoursInput(prefill);
   };
 
-  const runAutoGenerate = async () => {
+  /** GET-only: looks for shifts already generated for this range and, if found, displays them without ever calling the write endpoint. Returns whether it found any. */
+  const checkExisting = async (sid, start, end) => {
+    const existing = await fetchExistingShiftsForRange(apiGet, sid, start, end);
+    if (existing.length === 0) return false;
+    setShifts(existing);
+    setResult(null);
+    setRosterStatus("existing");
+    await refreshCapacity(sid, start);
+    return true;
+  };
+
+  // Restores the last store/date range the user looked at, and re-checks for
+  // existing shifts (GET only — never auto-generates) so an existing roster
+  // is still visible after a page refresh.
+  useEffect(() => {
+    (async () => {
+      const saved = await loadKey(LAST_QUERY_KEY, null);
+      if (!saved?.storeId || !saved?.startDate || !saved?.endDate) return;
+      setStoreId(saved.storeId);
+      setStartDate(saved.startDate);
+      setEndDate(saved.endDate);
+      setLoading(true);
+      try {
+        await checkExisting(saved.storeId, saved.startDate, saved.endDate);
+      } catch (err) {
+        setError(err.message || "Failed to load the existing roster.");
+      } finally {
+        setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const runCheckOrGenerate = async () => {
     if (!storeId || !startDate || !endDate) {
       setError("Enter Store ID, start date, and end date.");
       return;
     }
     setLoading(true);
     setError("");
+    setConfirmingRegenerate(false);
     try {
-      // 1. The ONLY place scheduling happens — the existing backend endpoint.
-      const genResult = await apiPost("/roster/auto-generate", { storeId, startDate, endDate, regenerate });
+      const { status, shifts: rows, result: genResult } = await resolveRoster({ apiGet, apiPost }, { storeId, startDate, endDate });
+      setShifts(rows);
       setResult(genResult);
-
-      // 2. Fetch the roster(s) it just wrote, via the existing GET /roster/:id, and
-      //    show only the real persisted shifts for the requested range.
-      const rosters = await Promise.all(genResult.rosterIds.map((id) => apiGet(`/roster/${id}`)));
-      const allShifts = rosters.flatMap((r) => r.shift || []);
-      setShifts(allShifts.filter((s) => s.shift_date >= startDate && s.shift_date <= endDate));
-
-      // 3. Existing monthly-hours-used / remaining figures — same endpoint the rest of the app uses.
+      setRosterStatus(status);
       await refreshCapacity(storeId, startDate);
+      await saveKey(LAST_QUERY_KEY, { storeId, startDate, endDate });
     } catch (err) {
       setError(err.message || "Auto Generate failed.");
       setShifts([]);
       setResult(null);
       setCapacity(null);
+      setRosterStatus(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const runRegenerate = async () => {
+    setLoading(true);
+    setError("");
+    setConfirmingRegenerate(false);
+    try {
+      const { status, shifts: rows, result: genResult } = await forceRegenerateRoster({ apiGet, apiPost }, { storeId, startDate, endDate });
+      setShifts(rows);
+      setResult(genResult);
+      setRosterStatus(status);
+      await refreshCapacity(storeId, startDate);
+      await saveKey(LAST_QUERY_KEY, { storeId, startDate, endDate });
+    } catch (err) {
+      setError(err.message || "Regenerate failed.");
     } finally {
       setLoading(false);
     }
@@ -171,26 +242,59 @@ export default function AutoRosterTab() {
         title="Auto Generate Roster (Test View)"
         icon={CalendarDays}
         right={
-          <Btn icon={loading ? RefreshCcw : Wand2} onClick={runAutoGenerate} disabled={loading}>
-            {loading ? "Generating..." : "Auto Generate"}
-          </Btn>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <RosterStatusBadge status={rosterStatus} />
+            <Btn icon={loading ? RefreshCcw : Wand2} onClick={runCheckOrGenerate} disabled={loading}>
+              {loading ? "Working..." : "Auto Generate"}
+            </Btn>
+            <Btn
+              variant="danger"
+              icon={RefreshCcw}
+              onClick={() => setConfirmingRegenerate(true)}
+              disabled={loading || !storeId || !startDate || !endDate}
+            >
+              Regenerate
+            </Btn>
+          </div>
         }
       >
         <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>
           Test/visualization only — calls the real <code>POST /api/roster/auto-generate</code> and renders exactly
-          what the backend returns. No scheduling rules run in the browser.
+          what the backend returns. No scheduling rules run in the browser. If a roster already exists for this
+          store and date range, <b>Auto Generate</b> only loads and displays it — it never overwrites. Only{" "}
+          <b>Regenerate</b> (with confirmation) replaces existing shifts.
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <input placeholder="Store ID (e.g. 1001)" value={storeId} onChange={(e) => setStoreId(e.target.value)} style={{ ...inp, width: 160 }} />
           <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inp} />
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inp} />
-          <label style={{ fontSize: 12, color: "#475569", display: "flex", alignItems: "center", gap: 6 }}>
-            <input type="checkbox" checked={regenerate} onChange={(e) => setRegenerate(e.target.checked)} />
-            regenerate
-          </label>
         </div>
+
+        {confirmingRegenerate && (
+          <div style={{ background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 10, padding: 14, marginTop: 14 }}>
+            <div style={{ color: "#991b1b", fontSize: 13, fontWeight: 700, marginBottom: 4 }}>Confirm regenerate</div>
+            <div style={{ color: "#7f1d1d", fontSize: 12, marginBottom: 12 }}>
+              This will <b>replace the existing roster</b> for store {storeId} between {startDate} and {endDate}. Any
+              shifts already generated for this range will be deleted and replaced. This cannot be undone.
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <Btn variant="danger" onClick={runRegenerate} disabled={loading} small>
+                {loading ? "Regenerating..." : "Confirm Regenerate"}
+              </Btn>
+              <Btn variant="ghost" onClick={() => setConfirmingRegenerate(false)} disabled={loading} small>
+                Cancel
+              </Btn>
+            </div>
+          </div>
+        )}
+
         {error && <div style={{ color: "#dc2626", fontSize: 12, marginTop: 10 }}>{error}</div>}
-        {result && !error && (
+        {rosterStatus === "existing" && !error && (
+          <div style={{ color: "#0369a1", fontSize: 12, marginTop: 10 }}>
+            Found {shifts.length} existing shift(s) for this range — showing the roster already on file.
+          </div>
+        )}
+        {rosterStatus === "generated" && result && !error && (
           <div style={{ color: "#16a34a", fontSize: 12, marginTop: 10 }}>
             Generated {result.generatedShifts} shift(s), {result.totalLaborHours}h total labor, validation status: {result.validation?.status}.
           </div>

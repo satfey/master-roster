@@ -97,6 +97,35 @@ describe('rosterValidationService.validateRoster', () => {
     expect(result.status).toBe('FAILED');
   });
 
+  test('closing coverage fails when only 1 shift ends exactly at closing time (2 are required) — even though someone is present during the last hour', async () => {
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: [makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '13:00', end: '22:00', hours: 8, employee: makeEmployee('E1') })],
+    });
+    forecastRepo.findForecastRows.mockResolvedValue([forecastRow('2026-08-24', 21, 1000)]);
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.closingCoverageOk).toBe(false);
+    expect(result.status).toBe('FAILED');
+  });
+
+  test('closing coverage passes when 2 shifts both end exactly at closing time', async () => {
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: [
+        makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '18:00', hours: 8, employee: makeEmployee('E1'), breakStart: '13:00', breakEnd: '14:00' }),
+        makeShift({ id: 's2', employeeId: 'E2', date: '2026-08-24', start: '13:00', end: '22:00', hours: 8, employee: makeEmployee('E2') }),
+        makeShift({ id: 's3', employeeId: 'E3', date: '2026-08-24', start: '16:00', end: '22:00', hours: 6, employee: makeEmployee('E3') }),
+      ],
+    });
+    forecastRepo.findForecastRows.mockResolvedValue(Array.from({ length: 13 }, (_, i) => forecastRow('2026-08-24', 9 + i, 500)));
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.closingCoverageOk).toBe(true);
+  });
+
   test('19. understaffing is detected when scheduled headcount is below the operational minimum (min_staff_per_shift) — never derived from sales alone', async () => {
     // min_staff_per_shift 2: every hour needs at least 2 people regardless of sales; only 1 is scheduled at hour 12.
     mockData({
@@ -270,15 +299,18 @@ describe('rosterValidationService.validateRoster', () => {
   test('5 & 11. actual hours recorded for the store reduce remaining monthly capacity, surfaced in validation without failing the roster', async () => {
     mockData({
       guideline: { target_productivity: 500, monthly_labor_hours: 1000 },
-      shifts: [makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '22:00', hours: 12, employee: makeEmployee('E1') })],
-      actualHoursRows: [{ actual_date: '2026-08-24', actual_hours: 20 }], // an event: 20 actual vs 12 planned
+      shifts: [
+        makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '22:00', hours: 12, employee: makeEmployee('E1') }),
+        makeShift({ id: 's2', employeeId: 'E2', date: '2026-08-24', start: '18:00', end: '22:00', hours: 4, employee: makeEmployee('E2') }), // 2nd closer, required for closingCoverageOk
+      ],
+      actualHoursRows: [{ actual_date: '2026-08-24', actual_hours: 20 }], // an event: 20 actual vs planned
     });
     forecastRepo.findForecastRows.mockResolvedValue([forecastRow('2026-08-24', 12, 1000)]);
 
     const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
     expect(result.actualLaborHours).toBe(20);
-    expect(result.actualHoursVariance).toBe(8); // +8h over planned
+    expect(result.actualHoursVariance).toBe(4); // +4h over the 16h planned (12 + 4)
     expect(result.monthlyCapacity[0].hoursUsedOrCommitted).toBe(20); // actual, not planned, counts toward the month
     expect(result.monthlyCapacity[0].remainingHours).toBe(980);
     expect(result.status).not.toBe('FAILED'); // extra usage is a warning, never an invalidating error

@@ -4,7 +4,7 @@ const { computeLaborDemand } = require('./laborDemandService');
 const { monthlyCapFor, validateRoster } = require('./rosterValidationService');
 const { computeDailyLaborHoursBudget } = require('./laborBudgetService');
 const { computeMonthlyCapacity } = require('./monthlyCapacityService');
-const { OPERATING_HOURS, operatingHourList } = require('./storeOperatingHours');
+const { OPERATING_HOURS, CLOSING_COVERAGE_STAFF_COUNT, operatingHourList } = require('./storeOperatingHours');
 const { eachDateInRange, isoWeekStart, monthKey, monthRange, toUTCDate } = require('../utils/dateRange');
 const {
   FULL_TIME_SHIFT_HOURS,
@@ -254,10 +254,34 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       budgetShortfalls.push({ date, requiredHours: null, allowedHours: dailyBudgetHours, shortageHours: null, reason: 'No eligible Full-time or Part-time employee available to cover opening (09:00).' });
     }
 
-    const closingResult = guaranteeCoverage({ isOpening: false, dailyBudgetRemaining: dailyBudgetHours - (openingResult?.length || 0) });
-    if (!closingResult) {
-      warnings.push(`${date}: could not guarantee closing coverage — no eligible employee available (all active employees are either already scheduled that day or at their weekly/monthly hour cap).`);
-      budgetShortfalls.push({ date, requiredHours: null, allowedHours: dailyBudgetHours, shortageHours: null, reason: 'No eligible Full-time or Part-time employee available to cover closing (22:00).' });
+    // Closing requires CLOSING_COVERAGE_STAFF_COUNT (2) DIFFERENT employees whose shift
+    // ends exactly at closing time — not just one person present in the last hour. Each
+    // iteration reuses guaranteeCoverage() unchanged (its FT-if-fits-budget -> PT-sized-
+    // to-fit -> FT-regardless-of-budget priority already matches the business examples),
+    // and automatically lands on a different employee each time since place() already
+    // marks assignedDay[empId-date] and pickEmployee() already excludes that.
+    let closingHoursUsed = 0;
+    let closingStaffFound = 0;
+    for (let i = 0; i < CLOSING_COVERAGE_STAFF_COUNT; i++) {
+      const closingResult = guaranteeCoverage({
+        isOpening: false,
+        dailyBudgetRemaining: dailyBudgetHours - (openingResult?.length || 0) - closingHoursUsed,
+      });
+      if (!closingResult) {
+        warnings.push(
+          `${date}: could not guarantee closing coverage — needed ${CLOSING_COVERAGE_STAFF_COUNT} employee(s) ending at closing time but only found ${closingStaffFound} (all remaining active employees are either already scheduled that day or at their weekly/monthly hour cap).`
+        );
+        budgetShortfalls.push({
+          date,
+          requiredHours: null,
+          allowedHours: dailyBudgetHours,
+          shortageHours: null,
+          reason: `Only ${closingStaffFound} of ${CLOSING_COVERAGE_STAFF_COUNT} required closing (22:00) employees could be scheduled — no further eligible Full-time or Part-time employee available.`,
+        });
+        break;
+      }
+      closingHoursUsed += closingResult.length;
+      closingStaffFound += 1;
     }
 
     // --- Priority 3: mandatory minimum staffing ---------------------------

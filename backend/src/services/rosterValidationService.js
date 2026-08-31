@@ -4,7 +4,7 @@ const laborBudgetRepo = require('../repositories/laborBudgetRepository');
 const { computeHourlyLaborDemand } = require('./laborDemandService');
 const { resolveSalesLevel, computeLaborCostBudget } = require('./laborBudgetService');
 const { computeMonthlyCapacity } = require('./monthlyCapacityService');
-const { OPERATING_HOURS, operatingHourList, daypartToHour } = require('./storeOperatingHours');
+const { OPERATING_HOURS, CLOSING_COVERAGE_STAFF_COUNT, operatingHourList, daypartToHour } = require('./storeOperatingHours');
 const { eachDateInRange, monthKey, monthRange } = require('../utils/dateRange');
 const {
   employeeShiftType,
@@ -165,11 +165,13 @@ async function validateRoster({ storeId, startDate, endDate }) {
   // while on break, so a break must not silently count as staffed.
   const scheduledByDateHour = new Map();
   const breakHoursByDateHour = new Set(); // `${date}|${hour}` — every FULL_TIME shift's break hour, used to tell a break-caused gap apart from ordinary understaffing
+  const closingStaffCountByDate = new Map(); // date -> count of shifts whose end_time is exactly closing time
   for (const s of shifts) {
     const startHour = startHourOf(s);
     const endHour = endHourOf(s);
     const breakHour = s.break_start_time ? Number(s.break_start_time.slice(0, 2)) : null;
     if (breakHour != null) breakHoursByDateHour.add(`${s.shift_date}|${breakHour}`);
+    if (endHour === OPERATING_HOURS.end) closingStaffCountByDate.set(s.shift_date, (closingStaffCountByDate.get(s.shift_date) || 0) + 1);
     for (let h = startHour; h < endHour; h++) {
       if (h < OPERATING_HOURS.start || h >= OPERATING_HOURS.end) continue; // outside the store's operating window isn't a coverage concern
       if (h === breakHour) continue;
@@ -183,9 +185,14 @@ async function validateRoster({ storeId, startDate, endDate }) {
   const breakCoverageGapViolations = []; // the subset of understaffed hours directly caused by a break — see spec section 12 "break creates coverage gap"
   let openingCoverageOk = true;
   let closingCoverageOk = true;
-  const lastOperatingHour = OPERATING_HOURS.end - 1;
 
   for (const date of eachDateInRange(startDate, endDate)) {
+    // Closing requires >= CLOSING_COVERAGE_STAFF_COUNT shifts whose end_time is exactly
+    // closing time — merely having someone present during the last operating hour is not
+    // enough (that shift might end well before closing while another employee happens to
+    // be on an unrelated overlapping shift).
+    if ((closingStaffCountByDate.get(date) || 0) < CLOSING_COVERAGE_STAFF_COUNT) closingCoverageOk = false;
+
     for (const hour of operatingHourList()) {
       const key = `${date}|${hour}`;
       const scheduled = scheduledByDateHour.get(key) || 0;
@@ -197,7 +204,6 @@ async function validateRoster({ storeId, startDate, endDate }) {
       }
       if (scheduled > maxJustified + OVERSTAFF_TOLERANCE) overstaffedHours.push(`${date} ${pad(hour)}:00`);
       if (scheduled === 0 && hour === OPERATING_HOURS.start) openingCoverageOk = false;
-      if (scheduled === 0 && hour === lastOperatingHour) closingCoverageOk = false;
     }
   }
 

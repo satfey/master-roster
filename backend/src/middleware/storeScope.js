@@ -5,13 +5,10 @@ const { failure } = require('../utils/apiResponse');
  * - STORE_MANAGER: only their own store
  * - AREA_COACH: only stores assigned to them (area_coach_id on Store)
  * - EXECUTIVE / ADMIN: unrestricted (company-wide)
- *
- * With the temporary system identity (role ADMIN), this is currently a no-op
- * — real restriction takes effect once per-user login is implemented.
  */
 function storeScope(req, res, next) {
   const { role, storeId, areaStoreIds } = req.user;
-  const targetStoreId = req.params.storeId || req.query.storeId || null;
+  const targetStoreId = req.params.id || req.params.storeId || req.query.storeId || req.body?.storeId || null;
 
   if (role === 'ADMIN' || role === 'EXECUTIVE') return next();
 

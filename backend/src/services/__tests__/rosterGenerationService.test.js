@@ -295,37 +295,47 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 3 Full-time / Pa
     expect(store.shifts.some((s) => s.end_time === '22:00')).toBe(true);
   });
 
-  test('5. the daily labor-hour guideline from the matched tier is respected: Full-time Opening (8h) + Part-time Closing (4h) = 12h exactly', async () => {
+  test('5. the daily labor-hour guideline from the matched tier is respected: Opening FT (8h) + Closing FT (8h) + Closing PT (4h) = 20h exactly', async () => {
     mockFlatForecastHistory(1000); // modest demand so no extra fill shift is needed beyond opening/closing
-    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 12 }]);
-    const store = createFakeStore({ employees: [makeEmployee('FT1'), makePartTime('PT1')] });
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 20 }]);
+    const store = createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1')] });
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    expect(result.totalLaborHours).toBe(12);
-    expect(result.generatedShifts).toBe(2);
+    expect(result.totalLaborHours).toBe(20);
+    expect(result.generatedShifts).toBe(3);
     // FT's clock span is 9h (8 working + 1h break 13:00-14:00), not 8h — planned_hours (WORKING hours) stays 8.
     expect(store.shifts.find((s) => s.start_time === '09:00')).toMatchObject({ end_time: '18:00', planned_hours: 8 });
-    expect(store.shifts.find((s) => s.end_time === '22:00')).toMatchObject({ start_time: '18:00', planned_hours: 4 });
+    // Closing requires 2 employees ending exactly at 22:00 — one Full-time (13:00-22:00, matching the business example), one Part-time sized to fit the remaining budget.
+    const closingShifts = store.shifts.filter((s) => s.end_time === '22:00');
+    expect(closingShifts).toHaveLength(2);
+    expect(closingShifts).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ start_time: '13:00', planned_hours: 8 }),
+        expect.objectContaining({ start_time: '18:00', planned_hours: 4 }),
+      ])
+    );
     expect(result.budgetShortfalls.find((b) => b.date === '2026-08-24')).toBeUndefined();
   });
 
   test('6. monthly remaining capacity is respected: the fill phase stops even though the daily budget alone would allow more', async () => {
-    mockFlatForecastHistory(20000); // no tier -> a ~52h/day natural demand, far more than the 20h monthly guideline
+    mockFlatForecastHistory(20000); // no tier -> a ~52h/day natural demand, far more than the 28h monthly guideline
     createFakeStore({
-      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: 20 },
-      employees: Array.from({ length: 4 }, (_, i) => makeEmployee(`FT${i}`)),
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: 28 },
+      employees: Array.from({ length: 4 }, (_, i) => makeEmployee(`FT${i}`)), // no Part-time employee -> every mandatory shift is Full-time (8h)
     });
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    // Opening (8h) + Closing (8h) = 16h fits inside the 20h monthly guideline; a third
-    // shift would need at least 4 more hours but only 4h of monthly room is left, and
-    // the only remaining eligible employees are Full-time (need 8h) — so filling stops.
-    expect(result.generatedShifts).toBe(2);
-    expect(result.totalLaborHours).toBe(16);
+    // Opening (8h) + 2 mandatory closers (8h each, no Part-time employee in the pool) = 24h
+    // fits inside the 28h monthly guideline; a discretionary 4th shift would need at least
+    // 8h (the only remaining eligible employee is Full-time) but only 4h of monthly room is
+    // left — so discretionary filling stops. Mandatory coverage itself is never limited by
+    // the monthly guideline (it bypasses the store cap, same as before this rule existed).
+    expect(result.generatedShifts).toBe(3);
+    expect(result.totalLaborHours).toBe(24);
     expect(result.validation.monthlyCapacity[0].remainingHours).toBe(4);
-    expect(result.validation.monthlyCapacity[0].hoursUsedOrCommitted).toBe(16);
+    expect(result.validation.monthlyCapacity[0].hoursUsedOrCommitted).toBe(24);
   });
 
   test("7. an earlier day's actual-hours overage (an event) reduces the remaining capacity seen by the next generation call", async () => {
@@ -381,16 +391,18 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 3 Full-time / Pa
   test('9. a warning (with required/allowed/shortage/date/reason) is returned when opening+closing coverage cannot fit the daily labor-hour budget', async () => {
     mockFlatForecastHistory(1000);
     laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 4 }]); // deliberately tiny
-    createFakeStore({ employees: [makePartTime('PT1'), makePartTime('PT2')] });
+    createFakeStore({ employees: [makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')] }); // enough for 1 opener + 2 closers
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
     // Coverage is still guaranteed (never silently dropped)...
     expect(result.validation.openingCoverageOk).toBe(true);
     expect(result.validation.closingCoverageOk).toBe(true);
-    // ...but the shortfall against the guideline is explicitly reported.
+    // ...but the shortfall against the guideline is explicitly reported. Opening (4h, PT
+    // minimum) + 2 closers (4h each, PT minimum, clamped up from the exhausted budget) = 12h
+    // mandatory coverage against a deliberately tiny 4h guideline.
     const shortfall = result.budgetShortfalls.find((b) => b.date === '2026-08-24');
-    expect(shortfall).toMatchObject({ date: '2026-08-24', requiredHours: 8, allowedHours: 4, shortageHours: 4 });
+    expect(shortfall).toMatchObject({ date: '2026-08-24', requiredHours: 12, allowedHours: 4, shortageHours: 8 });
     expect(typeof shortfall.reason).toBe('string');
     expect(shortfall.reason.length).toBeGreaterThan(0);
     expect(result.warnings.some((w) => w.includes('shortage'))).toBe(true);
@@ -401,7 +413,8 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
   test('high-sales hours receive extra staff and low-sales hours do not — driven by the hourly forecast shape, not just the daily total', async () => {
     // Hour 12 gets 20x the weight of every other operating hour: dailyForecast 3200 -> hour 12 = 2000, every other hour = 100.
     mockShapedForecastHistory(3200, { 12: 20 });
-    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 20 }]);
+    // 30h leaves room beyond the mandatory 1 opener + 2 closers (PT-only pool, 6h capped each = 18h) for discretionary fill.
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 30 }]);
     const store = createFakeStore({
       guideline: { target_productivity: 500, min_staff_per_shift: 1 },
       employees: Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`)),
@@ -419,20 +432,21 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
 
   test('total labor hours are an OUTPUT of the optimization, not padded toward the monthly guideline', async () => {
     mockFlatForecastHistory(5000); // no tier -> daily budget falls back to the bare operational minimum (13h)
-    createFakeStore({
+    const store = createFakeStore({
       guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: 1000 }, // generous, non-binding
       employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2')],
     });
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    // FT opening (8h, 09:00-18:00, break 13:00-14:00) + PT closing (5h, 17:00-22:00) leaves FT's own break hour
-    // (13:00) uncovered by anyone else — a real coverage gap, correctly backfilled by a 4h Part-time shift
-    // (13:00-17:00) via the minimum-staffing phase. 8 + 5 + 4 = 17h: still an OUTPUT of the optimization
-    // (driven by an actual gap that must be filled, not by the monthly guideline), just not the naive 13h a
-    // break-free clock-span sum would suggest.
-    expect(result.totalLaborHours).toBe(17);
-    expect(result.generatedShifts).toBe(3);
+    // FT1 opens (8h, 09:00-18:00, break 13:00-14:00); the 2 required closers are PT1
+    // (5h, 17:00-22:00) and PT2 (4h, 18:00-22:00) — 8+5+4=17h. Neither closer covers
+    // FT1's own break hour (13:00), a real coverage gap; with both Part-time employees
+    // already used that day, the minimum-staffing phase's only remaining option is FT2
+    // (8h, 09:00-18:00). 17+8=25h total: still an OUTPUT of the optimization (every hour
+    // is driven by an actual coverage requirement, never padded toward the guideline).
+    expect(result.totalLaborHours).toBe(25);
+    expect(result.generatedShifts).toBe(4);
     expect(result.totalLaborHours).toBeLessThan(50); // nowhere close to the 1000h monthly guideline — it is a ceiling, never a fill target
   });
 
@@ -459,10 +473,13 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    // Opening (8h) + Closing (8h) = 16h already exhausts the monthly guideline; no discretionary extra fill can be added on top.
-    expect(result.generatedShifts).toBe(2);
-    expect(result.totalLaborHours).toBe(16);
-    expect(result.validation.monthlyCapacity[0].remainingHours).toBe(0);
+    // Mandatory coverage (opening 8h + 2 required closers, 8h each — no Part-time employee in the
+    // pool) = 24h, which already exceeds the 16h monthly guideline on its own (mandatory coverage
+    // bypasses the store cap, same as it already did for a single closer before this rule). No
+    // discretionary extra fill can be added on top once the store's remaining capacity is negative.
+    expect(result.generatedShifts).toBe(3);
+    expect(result.totalLaborHours).toBe(24);
+    expect(result.validation.monthlyCapacity[0].remainingHours).toBe(-8);
   });
 });
 
@@ -506,7 +523,9 @@ describe('rosterGenerationService.generateDraftRoster — Full-time working hour
     mockFlatForecastHistory(5000); // no tier -> daily budget falls back to the bare operational minimum (13h)
     const store = createFakeStore({
       guideline: { target_productivity: 500, min_staff_per_shift: 1 },
-      employees: [makeEmployee('FT1'), makePartTime('PT1'), makePartTime('PT2')],
+      // FT1 opens, PT1 + PT2 are the 2 required closers — a 4th employee (PT3) is needed
+      // to be available for the minimum-staffing phase to backfill FT1's break hour.
+      employees: [makeEmployee('FT1'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')],
     });
 
     await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
@@ -653,5 +672,174 @@ describe('regression guard: Full-time must be exactly 8 WORKING hours, never 7 �
     expect(result.totalLaborHours).toBe(8);
     expect(result.validation.monthlyCapacity[0].hoursUsedOrCommitted).toBe(8);
     expect(result.validation.monthlyCapacity[0].remainingHours).toBe(992);
+  });
+});
+
+describe('rosterGenerationService.generateDraftRoster — closing coverage requires 2 employees ending exactly at closing time', () => {
+  test('A. every generated day has at least 2 shifts ending exactly at 22:00, and they are 2 distinct employees', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: Array.from({ length: 6 }, (_, i) => makeEmployee(`E${i}`)) });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.end_time === '22:00');
+    expect(closers.length).toBeGreaterThanOrEqual(2);
+    expect(new Set(closers.map((s) => s.employee_id)).size).toBe(closers.length); // never the same employee twice
+  });
+
+  test('business example: Full-time 13:00-22:00 + Part-time 16:00-22:00 both closing is valid', async () => {
+    mockFlatForecastHistory(1000);
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 22 }]);
+    const store = createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1')] });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.end_time === '22:00');
+    expect(closers).toHaveLength(2);
+    expect(closers).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ start_time: '13:00', planned_hours: 8 }),
+        expect.objectContaining({ start_time: '16:00', planned_hours: 6 }),
+      ])
+    );
+  });
+
+  test('business example: Full-time 13:00-22:00 + Full-time 13:00-22:00 both closing is valid (no Part-time employee in the pool)', async () => {
+    mockFlatForecastHistory(1000);
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 24 }]);
+    const store = createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')] });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.end_time === '22:00');
+    expect(closers).toHaveLength(2);
+    for (const c of closers) expect(c).toMatchObject({ start_time: '13:00', planned_hours: 8 });
+  });
+
+  test('invalid under the old rule: a single closer plus someone merely present in the last hour is no longer treated as valid closing coverage', async () => {
+    // 1 employee ends at 21:00 (present during the last operating hour, but NOT at closing) — under
+    // the old "someone scheduled during 21:00-22:00" check this looked fine; it no longer does.
+    mockFlatForecastHistory(1000);
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 8 }]);
+    const store = createFakeStore({ employees: [makePartTime('PT1')] });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(store.shifts.filter((s) => s.end_time === '22:00')).toHaveLength(0);
+    expect(result.validation.closingCoverageOk).toBe(false);
+  });
+
+  test('G. a warning + budgetShortfall (never a silently accepted partial roster) is produced when the pool can only supply 1 of the 2 required closers', async () => {
+    mockFlatForecastHistory(20000); // sizeable demand -> both employees get fully used on opening + the 1 available closer
+    const store = createFakeStore({ employees: [makeEmployee('E1'), makeEmployee('E2')] }); // enough for 1 opener + 1 closer, not 2 closers
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(store.shifts.filter((s) => s.end_time === '22:00')).toHaveLength(1);
+    expect(result.validation.closingCoverageOk).toBe(false);
+    expect(result.warnings.some((w) => w.includes('closing coverage'))).toBe(true);
+    expect(result.budgetShortfalls.some((b) => b.reason.includes('closing'))).toBe(true);
+  });
+
+  test('G. opening coverage still only requires 1 employee — unchanged by the closing rule', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: Array.from({ length: 6 }, (_, i) => makeEmployee(`E${i}`)) });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(store.shifts.filter((s) => s.start_time === '09:00').length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('G. no coverage gap exists anywhere in the operating window (09:00-22:00) with a generous employee pool', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: Array.from({ length: 6 }, (_, i) => makeEmployee(`E${i}`)) });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    for (let hour = 9; hour < 22; hour++) {
+      const coverage = store.shifts.filter((s) => {
+        const start = Number(s.start_time.slice(0, 2));
+        const end = Number(s.end_time.slice(0, 2));
+        const breakStart = s.break_start_time ? Number(s.break_start_time.slice(0, 2)) : null;
+        return start <= hour && hour < end && hour !== breakStart;
+      }).length;
+      expect(coverage).toBeGreaterThanOrEqual(1);
+    }
+  });
+
+  test('H. a Full-time employee already at their weekly hour cap is never picked as a closer', async () => {
+    mockFlatForecastHistory(20000);
+    const cappedEmployee = makeEmployee('FT_CAPPED', { default_weekly_hours: 8 }); // exactly 1 shift's worth
+    const store = createFakeStore({ employees: [cappedEmployee, makeEmployee('FT2'), makeEmployee('FT3')] });
+    // Consume FT_CAPPED's entire weekly cap on an earlier day in the SAME ISO week (Mon 2026-08-17 - Sun 2026-08-23).
+    await rosterRepo.insertShifts([
+      { roster_id: 'seed', employee_id: 'FT_CAPPED', shift_date: '2026-08-18', start_time: '09:00', end_time: '18:00', break_start_time: '13:00', break_end_time: '14:00', planned_hours: 8 },
+    ]);
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-20', endDate: '2026-08-20' });
+
+    const generatedShifts = store.shifts.filter((s) => s.shift_date === '2026-08-20'); // excludes the seeded prior-week shift itself
+    expect(generatedShifts.some((s) => s.employee_id === 'FT_CAPPED')).toBe(false);
+  });
+
+  test('H. the 6-consecutive-day rest rule still applies to a would-be closer', async () => {
+    mockFlatForecastHistory(20000);
+    const store = createFakeStore({ employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')] });
+    const priorDates = ['2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20', '2026-08-21', '2026-08-22'];
+    await rosterRepo.insertShifts(
+      priorDates.map((d) => ({
+        roster_id: 'seed-roster', employee_id: 'FT1', shift_date: d,
+        start_time: '13:00', end_time: '22:00', break_start_time: '17:00', break_end_time: '18:00', planned_hours: 8,
+      }))
+    );
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-23', endDate: '2026-08-23' });
+
+    const day7Shifts = store.shifts.filter((s) => s.shift_date === '2026-08-23');
+    expect(day7Shifts.some((s) => s.employee_id === 'FT1')).toBe(false); // FT1's 7th consecutive day is refused, even as a closer
+    expect(day7Shifts.filter((s) => s.end_time === '22:00').length).toBeGreaterThanOrEqual(1); // covered by someone else instead
+  });
+
+  test('F. swapping the employee pool (different ids, different size) still produces valid 2-person closing coverage — nothing is hardcoded by id', async () => {
+    mockFlatForecastHistory(20000);
+    const storeA = createFakeStore({ employees: [makeEmployee('Alpha'), makeEmployee('Beta'), makeEmployee('Gamma')] });
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+    expect(storeA.shifts.filter((s) => s.end_time === '22:00')).toHaveLength(2);
+
+    jest.clearAllMocks();
+    mockNoBudgetOverrides();
+    mockFlatForecastHistory(20000);
+    const storeB = createFakeStore({ employees: Array.from({ length: 8 }, (_, i) => makeEmployee(`Zeta${i}`)) });
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+    expect(storeB.shifts.filter((s) => s.end_time === '22:00')).toHaveLength(2);
+  });
+
+  test('E. target_productivity 700 (the business floor) never causes extra staff at a quiet hour just to bring productivity down toward it', async () => {
+    // Hour 12 gets 20x the weight of every other hour: dailyForecast 3200 -> hour 12 = 2000 (justifies floor(2000/700)=2), every other hour = 100 (justifies floor(100/700)=0, clamped up to the 1-person operational floor).
+    mockShapedForecastHistory(3200, { 12: 20 });
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 30 }]);
+    const store = createFakeStore({
+      guideline: { target_productivity: 700, min_staff_per_shift: 1 },
+      employees: Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`)),
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    function coverageAt(hour) {
+      return store.shifts.filter((s) => Number(s.start_time.slice(0, 2)) <= hour && hour < Number(s.end_time.slice(0, 2))).length;
+    }
+    expect(coverageAt(10)).toBe(1); // quiet hour: never padded up just to approach the 700 floor
+  });
+
+  test('D. a low-demand day is not padded up to the guideline\'s 43h bracket (950,001-1,500,000 tier) just because that tier matched', async () => {
+    mockFlatForecastHistory(1000); // real demand is tiny — the tier match alone must not inflate staffing
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 950001, sales_max: 1500000, allowed_labor_hours: 43 }]);
+    laborBudgetRepo.findGrossBudget.mockResolvedValue(1200000); // this date's actual sales/budget genuinely falls in the 43h bracket
+    const store = createFakeStore({ employees: Array.from({ length: 6 }, (_, i) => makeEmployee(`E${i}`)) });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.totalLaborHours).toBeLessThan(43); // the 43h bracket is the ceiling this day is allowed to use, not a fill target
+    expect(store.shifts.length).toBeLessThan(6); // not every employee in the pool was pressed into service just to approach 43h
   });
 });

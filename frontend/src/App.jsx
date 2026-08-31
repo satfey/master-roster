@@ -3,7 +3,9 @@ import { Store, Users, CalendarDays, TrendingUp, ClipboardCheck, LayoutDashboard
 import { Select } from "./components/ui.jsx";
 import { loadKey, saveKey } from "./lib/storage.js";
 import { todayMonth, calcGuidelineHours, forecastMonth, generateSchedule } from "./lib/calc.js";
+import { isAuthenticated, fetchCurrentUser, logout, onUnauthorized } from "./lib/auth.js";
 
+import LoginPage from "./pages/LoginPage.jsx";
 import SalesTab from "./pages/SalesTab.jsx";
 import SalesImportTab from "./pages/SalesImportTab.jsx";
 import RosterTab from "./pages/RosterTab.jsx";
@@ -31,6 +33,8 @@ const TABS = [
 ];
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authUser, setAuthUser] = useState(null);
   const [loading, setLoading] = useState(true);
   const [role, setRole] = useState("store_manager");
   const [branches, setBranches] = useState([]);
@@ -44,6 +48,36 @@ export default function App() {
   const [employeesByBranch, setEmployeesByBranch] = useState({});
   const [scheduleByBranch, setScheduleByBranch] = useState({});
   const [actualByBranch, setActualByBranch] = useState({});
+
+  // Restores the session on page refresh by re-fetching the identity from
+  // the backend (GET /me) rather than trusting the cached user localStorage
+  // holds — role/permissions must always come from the current DB state.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (isAuthenticated()) {
+        try {
+          const user = await fetchCurrentUser();
+          if (!cancelled) setAuthUser(user);
+        } catch {
+          // token rejected/expired — api.js already cleared it
+        }
+      }
+      if (!cancelled) setAuthChecked(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Fires when any API call comes back 401 for an authenticated request
+  // (e.g. the token expired mid-session) — drops back to the login screen.
+  useEffect(() => onUnauthorized(() => setAuthUser(null)), []);
+
+  const handleLogout = () => {
+    logout();
+    setAuthUser(null);
+  };
 
   useEffect(() => {
     (async () => {
@@ -141,6 +175,13 @@ export default function App() {
     await saveKey("branches", b);
   };
 
+  if (!authChecked) {
+    return <div style={{ padding: 40, fontSize: 14, color: "#64748b" }}>กำลังตรวจสอบสิทธิ์...</div>;
+  }
+  if (!authUser) {
+    return <LoginPage onLoggedIn={setAuthUser} />;
+  }
+
   if (loading) {
     return <div style={{ padding: 40, fontSize: 14, color: "#64748b" }}>กำลังโหลดข้อมูล...</div>;
   }
@@ -180,6 +221,17 @@ export default function App() {
             onChange={(e) => setMonth(e.target.value)}
             style={{ background: "#1a2740", color: "#fff", border: "1px solid #2b3b57", borderRadius: 8, padding: "7px 10px", fontSize: 13 }}
           />
+        </div>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ color: "#94a3b8", fontSize: 12 }}>
+            {authUser.name} · {authUser.role}
+          </span>
+          <button
+            onClick={handleLogout}
+            style={{ background: "transparent", color: "#fff", border: "1px solid #2b3b57", borderRadius: 8, padding: "6px 12px", fontSize: 12, cursor: "pointer" }}
+          >
+            Logout
+          </button>
         </div>
       </div>
 
