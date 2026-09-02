@@ -441,7 +441,7 @@ async function validateRoster({ storeId, startDate, endDate }) {
     ftBreakViolations, // a Full-time shift missing its break, or with the wrong break duration
     ftWeeklyHourViolations, // a Full-time employee over 48 working hours in some rolling 7-day window
     consecutiveDayViolations, // a Full-time employee worked more than 6 consecutive calendar days
-    ptHoursViolations, // a Part-time shift outside the 4-6 hour range
+    ptHoursViolations, // a Part-time shift outside the 4-8 hour range
     shiftWindowViolations, // a shift starting before 09:00 or ending after 22:00
     doubleBookingViolations, // an employee with more than one shift on the same date
     employeesOverLimit,

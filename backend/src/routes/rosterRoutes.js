@@ -207,7 +207,7 @@ const { storeScope } = require('../middleware/storeScope');
  *       ceiling, prioritizing the hour with the most headroom — so total
  *       labor hours are an OUTPUT of the optimization (e.g. 248h/month if
  *       that's what's needed), never padded toward a guideline. Full-time
- *       is always exactly 8h, Part-time always 4-6h, both within
+ *       is always exactly 8h, Part-time always 4-8h, both within
  *       09:00-22:00. Priorities 1-3 bypass the monthly/daily ceilings when
  *       truly necessary rather than silently leaving a gap — reported in
  *       `budgetShortfalls`, never silent. Per-employee weekly/monthly hour
@@ -442,7 +442,7 @@ const { storeScope } = require('../middleware/storeScope');
  *         $ref: '#/components/responses/ServerError'
  * /roster/capacity:
  *   get:
- *     summary: Rolling monthly labor-hour capacity for a store (Guideline / Used / Remaining)
+ *     summary: Rolling monthly labor-hour capacity for a store (Guideline / Used / Remaining / Monthly Sales)
  *     description: >
  *       PHASE 2 Section 3/7/13. Per day within the month, ACTUAL hours
  *       override PLANNED whenever recorded (store_actual_hours is the
@@ -451,6 +451,17 @@ const { storeScope } = require('../middleware/storeScope');
  *       null fields mean labor_guideline.monthly_labor_hours isn't
  *       configured for this store yet — no store-level cap is enforced in
  *       that case, matching how an unset target_productivity behaves today.
+ *
+ *       monthlySales (SUM of sales_report.gross_actual for the month) and
+ *       monthlyGuidelineHours (that total mapped through the fixed Sales ->
+ *       Monthly Labor Hours business table) are a SEPARATE, sales-derived
+ *       planning ceiling — deliberately distinct from monthlyGuideline
+ *       above (which comes from labor_guideline.monthly_labor_hours, a
+ *       manually-configured per-store value). Neither is a target the
+ *       roster generator tries to fill; both are informational ceilings.
+ *       guidelineWithinRange is false (monthlyGuidelineHours null) when
+ *       monthlySales falls outside the given table's 0-1,500,000 range —
+ *       never guessed at by extrapolation.
  *     tags: [Roster]
  *     parameters:
  *       - in: query
@@ -475,6 +486,9 @@ const { storeScope } = require('../middleware/storeScope');
  *                 monthlyGuideline: 1000
  *                 hoursUsedOrCommitted: 242
  *                 remainingHours: 758
+ *                 monthlySales: 735000
+ *                 monthlyGuidelineHours: 1140
+ *                 guidelineWithinRange: true
  *                 byDate:
  *                   - { date: '2026-08-01', plannedHours: 40, actualHours: 40, variance: 0 }
  *                   - { date: '2026-08-07', plannedHours: 56, actualHours: 68, variance: 12 }

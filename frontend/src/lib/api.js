@@ -44,9 +44,10 @@ export async function apiPost(path, data) {
 
 /**
  * Uploads a file as multipart/form-data with upload progress, via XHR
- * (fetch has no cross-browser upload progress event).
+ * (fetch has no cross-browser upload progress event). `fields` adds extra
+ * form fields alongside the file — e.g. Sales-by-Hour's required `month`.
  */
-export function uploadFile(path, file, { onProgress } = {}) {
+export function uploadFile(path, file, { onProgress, fields = {} } = {}) {
   return new Promise((resolve, reject) => {
     const token = getToken();
     const xhr = new XMLHttpRequest();
@@ -75,6 +76,7 @@ export function uploadFile(path, file, { onProgress } = {}) {
 
     const form = new FormData();
     form.append("file", file);
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
     xhr.send(form);
   });
 }

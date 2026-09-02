@@ -8,117 +8,16 @@ const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
 /**
+ * NOTE: GET /sales and POST /sales (salesController.list/create — plain
+ * CRUD on sales_record) are intentionally undocumented here — no frontend
+ * caller (the frontend's actual Sales Import feature below writes to
+ * sales_record via file upload, never through this CRUD pair directly) and
+ * no internal caller. The routes still exist and work — only removed from
+ * Swagger.
+ */
+
+/**
  * @swagger
- * /sales:
- *   get:
- *     summary: List sales records for a store
- *     tags: [Sales]
- *     parameters:
- *       - in: query
- *         name: storeId
- *         required: true
- *         schema: { type: string, format: uuid }
- *       - in: query
- *         name: from
- *         schema: { type: string, format: date }
- *         description: Inclusive lower bound on sales_date
- *       - in: query
- *         name: to
- *         schema: { type: string, format: date }
- *         description: Inclusive upper bound on sales_date
- *     responses:
- *       200:
- *         description: List of sales records
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/ApiResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: array
- *                       items:
- *                         allOf:
- *                           - $ref: '#/components/schemas/SalesRecord'
- *                           - type: object
- *                             properties:
- *                               sourceType: { $ref: '#/components/schemas/SalesSourceType' }
- *             example:
- *               success: true
- *               message: OK
- *               data:
- *                 - id: eeeeeeee-eeee-eeee-eeee-eeeeeeee0001
- *                   store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *                   sales_date: '2026-07-25'
- *                   amount: 25000
- *                   source_type_id: dddddddd-dddd-dddd-dddd-dddddddd0001
- *                   entered_by: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb003
- *                   created_at: '2026-07-31T03:25:54.489843'
- *                   sourceType: { id: dddddddd-dddd-dddd-dddd-dddddddd0001, name: POS }
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       403:
- *         $ref: '#/components/responses/ForbiddenError'
- *       500:
- *         $ref: '#/components/responses/ServerError'
- *   post:
- *     summary: Create a sales record for a specific date
- *     tags: [Sales]
- *     requestBody:
- *       required: true
- *       content:
- *         application/json:
- *           schema:
- *             type: object
- *             required: [storeId, date, amount]
- *             properties:
- *               storeId:
- *                 type: string
- *                 format: uuid
- *               date:
- *                 type: string
- *                 format: date
- *               amount:
- *                 type: number
- *                 format: float
- *               sourceTypeName:
- *                 type: string
- *                 default: MANUAL_ENTRY
- *                 description: Sales channel (e.g. POS, Grab, MANUAL_ENTRY) — created if it doesn't already exist
- *           example:
- *             storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *             date: 2026-08-03
- *             amount: 25000
- *             sourceTypeName: MANUAL_ENTRY
- *     responses:
- *       201:
- *         description: Sales record created
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/ApiResponse'
- *                 - type: object
- *                   properties:
- *                     data: { $ref: '#/components/schemas/SalesRecord' }
- *             example:
- *               success: true
- *               message: Sales record created
- *               data:
- *                 id: 22b8e718-8bb4-4fa9-b292-8e4870ae5658
- *                 store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *                 sales_date: '2026-08-03'
- *                 amount: 9999
- *                 source_type_id: 08646dbd-931c-4812-ad96-31647c0448bb
- *                 entered_by: null
- *                 created_at: '2026-08-03T04:40:34.81931'
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       403:
- *         $ref: '#/components/responses/ForbiddenError'
- *       500:
- *         $ref: '#/components/responses/ServerError'
  * /sales/import/preview:
  *   post:
  *     summary: Parse and validate a sales Excel report without importing it

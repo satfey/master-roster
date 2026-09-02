@@ -1,6 +1,7 @@
 const { parseSalesReportWorkbook } = require('./excelParser');
 const { transformRows } = require('./transform');
 const repo = require('../../repositories/salesReportRepository');
+const importJobStore = require('../importJobStore');
 
 const LOG_PREFIX = '[SALES_REPORT_PREVIEW]';
 // A full month's report across every store in this system is ~17,600 rows —
@@ -95,16 +96,32 @@ function buildRow(row, status, errors, store) {
   };
 }
 
-/** Parses + validates the workbook against the DB. Writes nothing except any auto-created stores when createMissingStores is true. Every row is evaluated (commit needs the full set) — only the PREVIEW response truncates what it sends back, see previewSalesReportImport. */
-async function evaluateRows(buffer, createMissingStores) {
+/**
+ * Parses + validates the workbook against the DB. Writes nothing except any
+ * auto-created stores when createMissingStores is true. Every row is
+ * evaluated (commit needs the full set) — only the PREVIEW response
+ * truncates what it sends back, see previewSalesReportImport.
+ *
+ * `jobId`, when given (commit only — see commitSalesReportImport), is purely
+ * a progress-reporting side channel into importJobStore: it does not change
+ * anything computed here, it only marks which of these same stages is
+ * currently running so a client can poll real status instead of guessing.
+ */
+async function evaluateRows(buffer, createMissingStores, jobId = null) {
   const t0 = Date.now();
+  if (jobId) importJobStore.beginStage(jobId, 'parsing', 'Reading Excel file...');
   const { rows: rawRows } = await parseSalesReportWorkbook(buffer);
   const tParsed = Date.now();
   console.log(`${LOG_PREFIX} workbook read + rows extracted: ${tParsed - t0} ms (${rawRows.length} raw rows)`);
+  if (jobId) {
+    importJobStore.setTotalRows(jobId, rawRows.length);
+    importJobStore.beginStage(jobId, 'transforming', `Transforming ${rawRows.length} rows...`);
+  }
 
   const rows = transformRows(rawRows);
   const tTransformed = Date.now();
   console.log(`${LOG_PREFIX} rows transformed: ${tTransformed - tParsed} ms`);
+  if (jobId) importJobStore.beginStage(jobId, 'validating', `Validating ${rows.length} rows...`);
 
   const { storeMap, createdStores } = await resolveStores(rows, createMissingStores);
   const storeIds = [...new Set([...storeMap.values()].map((s) => s.id))];
@@ -186,8 +203,9 @@ async function previewSalesReportImport(buffer) {
   return result;
 }
 
-async function commitSalesReportImport(buffer, userId) {
-  const { rows, createdStores } = await evaluateRows(buffer, true);
+/** `jobId`, when given, is the same progress side-channel described on evaluateRows — purely additive, never changes what gets written or how. */
+async function commitSalesReportImport(buffer, userId, jobId = null) {
+  const { rows, createdStores } = await evaluateRows(buffer, true, jobId);
   // 'new' (no existing DB row for this store+date) and 'update' (one already
   // exists) are both written — the upsert below decides INSERT vs UPDATE per
   // row via ON CONFLICT. 'duplicate_in_file' rows are never written: a
@@ -196,7 +214,6 @@ async function commitSalesReportImport(buffer, userId) {
   const writableRows = rows.filter((r) => r.status === 'new' || r.status === 'update');
 
   const sourceType = await repo.getSalesReportSourceType();
-  const importedAt = new Date().toISOString();
   const records = writableRows.map((r) => ({
     store_id: r.storeId,
     report_store_id: r.reportStoreId,
@@ -232,9 +249,18 @@ async function commitSalesReportImport(buffer, userId) {
 
     source_type_id: sourceType.id,
     entered_by: userId,
-    updated_at: importedAt, // refreshed on every write, insert or update, to record when this data was last imported — created_at is deliberately absent here, see upsertRecords
+    // no updated_at here — sales_report has no such column (only created_at, which upsertRecords
+    // deliberately omits from every record so it's never touched on an update).
   }));
 
+  // The write itself is a single atomic upsert (see upsertRecords' own doc comment) — Postgres
+  // gives no mid-statement row-count signal for one INSERT..ON CONFLICT covering the whole
+  // batch, so there is no real per-row progress to report here (chunking it into many smaller
+  // upserts, purely to manufacture progress events, would trade away that atomicity guarantee —
+  // out of scope for a progress-reporting change). The honest thing to report is that it started,
+  // how many rows it covers, and — once awaited below — that it finished; elapsed time is what
+  // the client shows while this line is in flight.
+  if (jobId) importJobStore.beginStage(jobId, 'database_insert', `Writing ${records.length} rows to database...`);
   const imported = await repo.upsertRecords(records);
 
   return {

@@ -7,7 +7,7 @@ jest.mock('../../../repositories/salesByHourRepository', () => ({
   createStores: jest.fn(),
   findExistingRecordKeys: jest.fn(),
   getSalesByHourSourceType: jest.fn(),
-  insertRecords: jest.fn(),
+  upsertRecords: jest.fn(),
   recordKey: jest.fn(),
 }));
 const repo = require('../../../repositories/salesByHourRepository');
@@ -51,7 +51,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   repo.findExistingRecordKeys.mockResolvedValue(new Set());
   repo.getSalesByHourSourceType.mockResolvedValue({ id: 'uuid-source-type' });
-  repo.insertRecords.mockImplementation(async (records) => records.length);
+  repo.upsertRecords.mockImplementation(async (records) => records.length);
   repo.recordKey.mockImplementation((storeId, month, hour) => `${storeId}|${month}|${hour}`);
 });
 
@@ -77,7 +77,7 @@ describe('salesByHourImportService — the Excel Store ID becomes store.id direc
 
     expect(repo.createStores).not.toHaveBeenCalled();
     expect(result.storesCreated).toEqual([]);
-    const [records] = repo.insertRecords.mock.calls[0];
+    const [records] = repo.upsertRecords.mock.calls[0];
     expect(records[0].store_id).toBe('1001');
   });
 
@@ -93,7 +93,7 @@ describe('salesByHourImportService — the Excel Store ID becomes store.id direc
 
     expect(repo.createStores).toHaveBeenCalledTimes(1);
     expect(result.storesCreated).toHaveLength(1);
-    const [records] = repo.insertRecords.mock.calls[0];
+    const [records] = repo.upsertRecords.mock.calls[0];
     expect(new Set(records.map((r) => r.store_id))).toEqual(new Set(['1001']));
   });
 
@@ -133,7 +133,7 @@ describe('salesByHourImportService — the Excel Store ID becomes store.id direc
 
     const result = await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
     expect(result.imported).toBe(0);
-    expect(repo.insertRecords).toHaveBeenCalledWith([]);
+    expect(repo.upsertRecords).toHaveBeenCalledWith([]);
   });
 });
 
@@ -143,7 +143,7 @@ describe('salesByHourImportService — payload correctness', () => {
     const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 1150, 9]]);
 
     const result = await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
-    const [records] = repo.insertRecords.mock.calls[0];
+    const [records] = repo.upsertRecords.mock.calls[0];
 
     expect(records[0]).toMatchObject({
       store_id: '1001',
@@ -160,8 +160,13 @@ describe('salesByHourImportService — payload correctness', () => {
   });
 });
 
-describe('salesByHourImportService — duplicate handling', () => {
-  test('15. re-importing the same file for the same month does not duplicate records', async () => {
+describe('salesByHourImportService — upsert business rule: an existing (store_id, report_month, hour) is UPDATEd, never rejected', () => {
+  // Regression guard: this used to INSERT unconditionally and reject an existing key as a
+  // "duplicate" (skipped, not written) — re-importing a corrected report then crashed with a real
+  // 23505 unique-violation on (store_id, report_month, hour), since the plain insert conflicted
+  // with the row already on file. Upsert makes re-importing the same store/month/hour overwrite
+  // cleanly, the same convention Sales Report Import already uses.
+  test('15. re-importing the same file for the same month UPDATEs the existing row instead of being rejected', async () => {
     createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'ABC Central' }]);
     const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 1150, 1]]);
 
@@ -169,25 +174,43 @@ describe('salesByHourImportService — duplicate handling', () => {
     repo.findExistingRecordKeys.mockResolvedValueOnce(new Set());
     const first = await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
     expect(first.imported).toBe(1);
-    expect(first.skippedDuplicates).toBe(0);
+    expect(first.inserted).toBe(1);
+    expect(first.updated).toBe(0);
 
     // Second import of the SAME file/month: simulate the DB now having that record.
     repo.findExistingRecordKeys.mockResolvedValueOnce(new Set(['1001|2026-07-01|1']));
     const second = await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
-    expect(second.imported).toBe(0);
-    expect(second.skippedDuplicates).toBe(1);
+    expect(second.imported).toBe(1); // still written — as an UPDATE, not skipped
+    expect(second.inserted).toBe(0);
+    expect(second.updated).toBe(1);
+    expect(repo.upsertRecords).toHaveBeenLastCalledWith([expect.objectContaining({ store_id: '1001', hour: 1 })]);
   });
 
-  test('duplicate rows within the SAME file (same store+hour twice) are only imported once', async () => {
+  test('a row whose (store_id, report_month, hour) already exists in DB is classified update, not rejected as a duplicate', async () => {
+    createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'ABC Central' }]);
+    repo.findExistingRecordKeys.mockResolvedValue(new Set(['1001|2026-07-01|1']));
+    const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 9999, 1]]);
+
+    const preview = await previewSalesByHourImport(buffer, MONTH);
+
+    expect(preview.rows[0].status).toBe('update');
+    expect(preview.updateRows).toBe(1);
+    expect(preview.newRows).toBe(0);
+  });
+
+  test('duplicate rows within the SAME file (same store+hour twice) still collapse to a single write — the last occurrence wins', async () => {
     createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'ABC Central' }]);
     const buffer = await buildWorkbook([
       ['ABC', 1001, 'ABC Central', 1150, 9],
-      [null, null, null, 1400, 9], // same store, same hour, repeated
+      [null, null, null, 1400, 9], // same store, same hour, repeated — this is the winning value
     ]);
 
     const result = await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
+
     expect(result.imported).toBe(1);
-    expect(result.skippedDuplicates).toBe(1);
+    expect(result.skippedDuplicatesInFile).toBe(1);
+    const [records] = repo.upsertRecords.mock.calls[0];
+    expect(records[0].gross_sale).toBe(1400); // the later row in the file, not the earlier 1150
   });
 });
 
@@ -217,38 +240,40 @@ describe('salesByHourImportService — API response: storeId is store.id, the ca
 });
 
 describe('salesByHourImportService — preview never writes to the DB', () => {
-  test('17. preview does not call createStores or insertRecords, even for an unknown Store ID', async () => {
+  test('17. preview does not call createStores or upsertRecords, even for an unknown Store ID', async () => {
     createFakeStoreTable([]);
     const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 1150, 1]]);
 
     const preview = await previewSalesByHourImport(buffer, MONTH);
 
     expect(repo.createStores).not.toHaveBeenCalled();
-    expect(repo.insertRecords).not.toHaveBeenCalled();
-    expect(preview.rows[0].status).toBe('valid');
+    expect(repo.upsertRecords).not.toHaveBeenCalled();
+    expect(preview.rows[0].status).toBe('new');
     expect(preview.rows[0].willCreateStore).toBe(true);
     expect(preview.newStoreCount).toBe(1);
   });
 
-  test('preview reports totals/valid/invalid/duplicate rows correctly', async () => {
+  test('preview reports totals/new/update/invalid/duplicate-in-file rows correctly', async () => {
     createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'ABC Central' }]);
     repo.findExistingRecordKeys.mockResolvedValue(new Set(['1001|2026-07-01|1']));
     const buffer = await buildWorkbook([
-      ['ABC', 1001, 'ABC Central', 1150, 1], // duplicate vs DB
-      [null, null, null, 1280, 9], // valid
+      ['ABC', 1001, 'ABC Central', 1150, 1], // already exists in DB -> update
+      [null, null, null, 1280, 9], // new
       [null, null, null, 'bad', 10], // invalid gross sale
     ]);
 
     const preview = await previewSalesByHourImport(buffer, MONTH);
     expect(preview.totalRows).toBe(3);
-    expect(preview.duplicateRows).toBe(1);
-    expect(preview.validRows).toBe(1);
+    expect(preview.updateRows).toBe(1);
+    expect(preview.newRows).toBe(1);
+    expect(preview.validRows).toBe(2);
     expect(preview.invalidRows).toBe(1);
+    expect(preview.duplicateInFileRows).toBe(0);
   });
 });
 
 describe('salesByHourImportService — commit actually inserts', () => {
-  test('18. commit inserts only valid rows into sales_by_hour via insertRecords', async () => {
+  test('18. commit inserts only valid rows into sales_by_hour via upsertRecords', async () => {
     createFakeStoreTable([{ id: '1001', storeCode: '1001', name: 'ABC Central' }]);
     const buffer = await buildWorkbook([
       ['ABC', 1001, 'ABC Central', 1150, 1],
@@ -257,8 +282,8 @@ describe('salesByHourImportService — commit actually inserts', () => {
 
     const result = await commitSalesByHourImport(buffer, MONTH, 'uuid-user-1');
 
-    expect(repo.insertRecords).toHaveBeenCalledTimes(1);
-    const [records] = repo.insertRecords.mock.calls[0];
+    expect(repo.upsertRecords).toHaveBeenCalledTimes(1);
+    const [records] = repo.upsertRecords.mock.calls[0];
     expect(records).toHaveLength(1);
     expect(result.imported).toBe(1);
     expect(result.failed).toHaveLength(1);
@@ -270,6 +295,6 @@ describe('salesByHourImportService — commit actually inserts', () => {
     const buffer = await buildWorkbook([['ABC', 1001, 'ABC Central', 1150, 1]]);
 
     await expect(commitSalesByHourImport(buffer, MONTH, 'uuid-user-1')).rejects.toThrow('insert failed');
-    expect(repo.insertRecords).not.toHaveBeenCalled();
+    expect(repo.upsertRecords).not.toHaveBeenCalled();
   });
 });

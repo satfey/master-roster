@@ -37,8 +37,8 @@ Retrieve stored `SalesForecast` rows. **Permission (future)**: `forecast:view`
 The only supported roster-generation endpoint (the earlier fixed-template
 `POST /roster/generate` has been removed). Auto-generates a DRAFT roster over
 a date range: Full-time shifts are exactly 8 working hours + a 1-hour meal
-break (9-hour clock span), Part-time is 4-6 hours, opening (09:00) and
-closing (22:00) coverage are guaranteed, and staffing is sized from the
+break (9-hour clock span), Part-time is 4-8 hours, opening (09:00, >=1
+employee) and closing (22:00, >=2 employees) coverage are guaranteed, and staffing is sized from the
 sales forecast, labor guideline, and monthly capacity — never auto-approved.
 **Body**: `{ "storeId": "uuid", "startDate": "2026-07-27", "endDate": "2026-08-02", "regenerate": false }`
 **Permission (future)**: `schedule:generate`

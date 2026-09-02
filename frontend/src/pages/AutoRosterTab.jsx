@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from "react";
-import { CalendarDays, Wand2, RefreshCcw, Clock } from "lucide-react";
+import React, { useState, useEffect, useRef } from "react";
+import { CalendarDays, Wand2, RefreshCcw, TrendingUp } from "lucide-react";
 import { Card, KpiTile, Btn, th, td, inp } from "../components/ui.jsx";
 import { apiGet, apiPost } from "../lib/api.js";
 import { loadKey, saveKey } from "../lib/storage.js";
@@ -8,7 +8,7 @@ import { resolveRoster, forceRegenerateRoster, fetchExistingShiftsForRange } fro
 /**
  * Test/visualization screen only — NOT the production roster UI.
  *
- * All scheduling (Full-time 8h + 1h break, Part-time 4-6h, opening/closing
+ * All scheduling (Full-time 8h + 1h break, Part-time 4-8h, opening/closing
  * coverage, weekly/monthly limits, productivity, labor budget, forecast,
  * etc.) happens entirely in the backend's rosterGenerationService. This
  * component only calls POST /api/roster/auto-generate, then fetches the
@@ -53,15 +53,15 @@ function weekdayLabel(dateStr) {
 
 function employeeTypeLabel(employee) {
   const t = (employee?.position_time_type || "").trim().toLowerCase();
-  if (t.startsWith("full")) return "Full";
-  if (t.startsWith("part")) return "Part";
+  if (t.startsWith("full")) return "Full time";
+  if (t.startsWith("part")) return "Part time";
   return "-";
 }
 
 /** Renders exactly the fields the backend returned for one shift — no derived/invented values beyond formatting. */
 function ShiftCell({ shift }) {
   if (!shift) return <span style={{ color: "#cbd5e1" }}>-</span>;
-  const isFullTime = employeeTypeLabel(shift.employee) === "Full";
+  const isFullTime = employeeTypeLabel(shift.employee) === "Full time";
   return (
     <div
       style={{
@@ -109,14 +109,46 @@ export default function AutoRosterTab() {
   const [rosterStatus, setRosterStatus] = useState(null); // 'existing' | 'generated' | null
   const [confirmingRegenerate, setConfirmingRegenerate] = useState(false);
   const [shifts, setShifts] = useState([]); // real shift rows fetched back from the backend
-  const [capacity, setCapacity] = useState(null); // raw GET /roster/capacity response
   const [actualHoursInput, setActualHoursInput] = useState({}); // date -> string, the manager's editable entry
   const [savingActualHours, setSavingActualHours] = useState(false);
+
+  // Store Monthly Overview (Monthly Sales / Monthly Guideline / Used / Remaining) — independent
+  // of the Auto Generate date range above; changing the month here only re-fetches, it never
+  // triggers a roster regenerate. Kept as its own state, separate from the actual-hours prefill's
+  // own GET /roster/capacity call below, which must stay tied to the roster's own month.
+  const [overviewMonth, setOverviewMonth] = useState(() => new Date().toISOString().slice(0, 7));
+  const [monthlyOverview, setMonthlyOverview] = useState(null);
+  const [overviewLoading, setOverviewLoading] = useState(false);
+  const [overviewError, setOverviewError] = useState("");
+  const storeIdRef = useRef(storeId);
+  useEffect(() => {
+    storeIdRef.current = storeId;
+  }, [storeId]);
+
+  const refreshMonthlyOverview = async (sid, monthKey) => {
+    if (!sid || !monthKey) return;
+    setOverviewLoading(true);
+    setOverviewError("");
+    try {
+      const data = await apiGet(`/roster/capacity?storeId=${encodeURIComponent(sid)}&month=${monthKey}`);
+      setMonthlyOverview(data);
+    } catch (err) {
+      setOverviewError(err.message || "Failed to load monthly overview.");
+      setMonthlyOverview(null);
+    } finally {
+      setOverviewLoading(false);
+    }
+  };
+
+  // Re-fetches only when the month selector itself changes — never on every storeId keystroke.
+  useEffect(() => {
+    if (storeIdRef.current) refreshMonthlyOverview(storeIdRef.current, overviewMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [overviewMonth]);
 
   /** Re-reads the existing monthly capacity endpoint and prefills the actual-hours inputs from it — never computed locally. */
   const refreshCapacity = async (sid, anyDateInMonth) => {
     const cap = await apiGet(`/roster/capacity?storeId=${encodeURIComponent(sid)}&month=${anyDateInMonth.slice(0, 7)}`);
-    setCapacity(cap);
     const prefill = {};
     for (const d of cap.byDate) {
       if (d.actualHours != null) prefill[d.date] = String(d.actualHours);
@@ -153,6 +185,7 @@ export default function AutoRosterTab() {
       } finally {
         setLoading(false);
       }
+      refreshMonthlyOverview(saved.storeId, overviewMonth);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -171,12 +204,12 @@ export default function AutoRosterTab() {
       setResult(genResult);
       setRosterStatus(status);
       await refreshCapacity(storeId, startDate);
+      refreshMonthlyOverview(storeId, overviewMonth);
       await saveKey(LAST_QUERY_KEY, { storeId, startDate, endDate });
     } catch (err) {
       setError(err.message || "Auto Generate failed.");
       setShifts([]);
       setResult(null);
-      setCapacity(null);
       setRosterStatus(null);
     } finally {
       setLoading(false);
@@ -193,6 +226,7 @@ export default function AutoRosterTab() {
       setResult(genResult);
       setRosterStatus(status);
       await refreshCapacity(storeId, startDate);
+      refreshMonthlyOverview(storeId, overviewMonth);
       await saveKey(LAST_QUERY_KEY, { storeId, startDate, endDate });
     } catch (err) {
       setError(err.message || "Regenerate failed.");
@@ -232,7 +266,8 @@ export default function AutoRosterTab() {
       employees.push(s.employee);
     }
   }
-  employees.sort((a, b) => `${a.first_name || ""} ${a.last_name || ""}`.localeCompare(`${b.first_name || ""} ${b.last_name || ""}`));
+  // Sorted by type then id — never by name, since the roster only ever displays position (Full time / Part time), not who's in it.
+  employees.sort((a, b) => employeeTypeLabel(a).localeCompare(employeeTypeLabel(b)) || String(a.id).localeCompare(String(b.id)));
 
   const shiftFor = (employeeId, date) => shifts.find((s) => s.employee_id === employeeId && s.shift_date === date) || null;
 
@@ -265,7 +300,13 @@ export default function AutoRosterTab() {
           <b>Regenerate</b> (with confirmation) replaces existing shifts.
         </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input placeholder="Store ID (e.g. 1001)" value={storeId} onChange={(e) => setStoreId(e.target.value)} style={{ ...inp, width: 160 }} />
+          <input
+            placeholder="Store ID (e.g. 1001)"
+            value={storeId}
+            onChange={(e) => setStoreId(e.target.value)}
+            onBlur={() => refreshMonthlyOverview(storeId, overviewMonth)}
+            style={{ ...inp, width: 160 }}
+          />
           <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inp} />
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inp} />
         </div>
@@ -301,20 +342,59 @@ export default function AutoRosterTab() {
         )}
       </Card>
 
-      {capacity && (
-        <Card title="Monthly Labor Hours (existing capacity endpoint)" icon={Clock}>
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <KpiTile
-              label="Monthly Guideline"
-              value={capacity.monthlyGuideline != null ? `${capacity.monthlyGuideline} ชม.` : "ยังไม่ตั้งค่า"}
+      {storeId && (
+        <Card
+          title={`Store Monthly Overview — Store ${storeId}`}
+          icon={TrendingUp}
+          right={
+            <input
+              type="month"
+              value={overviewMonth}
+              onChange={(e) => setOverviewMonth(e.target.value)}
+              style={inp}
             />
-            <KpiTile label="ใช้ไปแล้ว (Used/Committed)" value={`${capacity.hoursUsedOrCommitted} ชม.`} />
-            <KpiTile
-              label="คงเหลือ (Remaining)"
-              value={capacity.remainingHours != null ? `${capacity.remainingHours} ชม.` : "-"}
-              tone={capacity.remainingHours != null ? (capacity.remainingHours < 0 ? "danger" : "good") : "default"}
-            />
+          }
+        >
+          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>
+            Monthly Sales (SUM of <code>sales_report.gross_actual</code> for the month) mapped through the
+            Sales → Monthly Labor Hours business table. This is a planning ceiling only — Auto Generate
+            optimizes to actual demand and never pads shifts to fill it. Changing the month only re-fetches;
+            it never regenerates the roster.
           </div>
+          {overviewLoading && <div style={{ fontSize: 12, color: "#94a3b8" }}>Loading...</div>}
+          {overviewError && <div style={{ color: "#dc2626", fontSize: 12, marginBottom: 10 }}>{overviewError}</div>}
+          {monthlyOverview && !overviewLoading && (() => {
+            // Two independent guideline sources exist on this same response: monthlyGuideline
+            // (labor_guideline.monthly_labor_hours — a manual per-store override, unset for every
+            // store today) and monthlyGuidelineHours (computed from this month's real sales via the
+            // business table). Showing both as two separate "Monthly Guideline" numbers is confusing
+            // — one manual override, if a store ever has one set, always wins; otherwise fall back
+            // to the sales-derived figure.
+            const hasOverride = monthlyOverview.monthlyGuideline != null;
+            const guidelineValue = hasOverride
+              ? `${monthlyOverview.monthlyGuideline} hrs`
+              : monthlyOverview.guidelineWithinRange
+              ? `${monthlyOverview.monthlyGuidelineHours} hrs`
+              : "Outside guideline range";
+            const guidelineSub = hasOverride ? "manual override" : "from monthly sales";
+            return (
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <KpiTile label="Monthly Sales" value={`฿${Math.round(monthlyOverview.monthlySales).toLocaleString()}`} />
+                <KpiTile
+                  label="Monthly Guideline"
+                  value={guidelineValue}
+                  sub={guidelineSub}
+                  tone={!hasOverride && !monthlyOverview.guidelineWithinRange ? "warn" : "default"}
+                />
+                <KpiTile label="Used" value={`${monthlyOverview.hoursUsedOrCommitted} hrs`} />
+                <KpiTile
+                  label="Remaining"
+                  value={monthlyOverview.remainingHours != null ? `${monthlyOverview.remainingHours} hrs` : "-"}
+                  tone={monthlyOverview.remainingHours != null ? (monthlyOverview.remainingHours < 0 ? "danger" : "good") : "default"}
+                />
+              </div>
+            );
+          })()}
         </Card>
       )}
 
@@ -325,7 +405,7 @@ export default function AutoRosterTab() {
               <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
                 <thead>
                   <tr>
-                    <th style={{ ...th, position: "sticky", left: 0, background: "#f8fafc", minWidth: 160, zIndex: 1 }}>STAFF NAME</th>
+                    <th style={{ ...th, position: "sticky", left: 0, background: "#f8fafc", minWidth: 160, zIndex: 1 }}>POSITION</th>
                     {dates.map((d) => (
                       <th key={d} style={{ ...th, minWidth: 130, textAlign: "center" }}>
                         <div>{weekdayLabel(d)}</div>
@@ -337,13 +417,9 @@ export default function AutoRosterTab() {
                 <tbody>
                   {employees.map((emp) => (
                     <tr key={emp.id}>
+                      {/* Position only — never the employee's name or job title, so nobody can tell who is scheduled for which shift from this view. */}
                       <td style={{ ...td, position: "sticky", left: 0, background: "#fff", verticalAlign: "top" }}>
-                        <div style={{ fontWeight: 700 }}>
-                          {emp.first_name} {emp.last_name}
-                        </div>
-                        <div style={{ fontSize: 11, color: "#64748b" }}>
-                          {emp.position ? `(${emp.position})` : ""} {employeeTypeLabel(emp) !== "-" ? `· (${employeeTypeLabel(emp)})` : ""}
-                        </div>
+                        <div style={{ fontWeight: 700 }}>{employeeTypeLabel(emp)}</div>
                       </td>
                       {dates.map((d) => (
                         <td key={d} style={{ ...td, textAlign: "center", verticalAlign: "top" }}>

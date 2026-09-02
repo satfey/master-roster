@@ -24,7 +24,7 @@ async function findAllStores() {
  */
 async function findEmployeesByIds(ids) {
   if (!ids.length) return new Map();
-  const employees = await runInBatches(ids, (batch) => supabase.from('employee').select('*').in('id', batch));
+  const employees = await runInBatches(ids, (batch, { from, to }) => supabase.from('employee').select('*').in('id', batch).range(from, to));
   return new Map(employees.map((e) => [e.id, e]));
 }
 

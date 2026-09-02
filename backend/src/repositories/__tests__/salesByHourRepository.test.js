@@ -6,13 +6,13 @@ jest.mock('../../config/supabase', () => ({ from: (...args) => mockFromImpl(...a
 
 const repo = require('../salesByHourRepository');
 
-/** Minimal fake supabase-js query builder: supports .select().in().eq().insert() and is awaitable. */
+/** Minimal fake supabase-js query builder: supports .select().in().eq().range().insert() and is awaitable. */
 function createFakeFrom(tables) {
   const inCalls = [];
   const insertCalls = [];
   const from = jest.fn((tableName) => {
     const rows = tables[tableName] || (tables[tableName] = []);
-    const state = { column: null, values: null, filters: [], insertPayload: null };
+    const state = { column: null, values: null, filters: [], insertPayload: null, range: null };
     const builder = {
       select: jest.fn(() => builder),
       in: jest.fn((column, values) => {
@@ -22,6 +22,7 @@ function createFakeFrom(tables) {
         return builder;
       }),
       eq: jest.fn((col, val) => { state.filters.push([col, val]); return builder; }),
+      range: jest.fn((from2, to2) => { state.range = [from2, to2]; return builder; }),
       insert: jest.fn((payload) => {
         state.insertPayload = payload;
         insertCalls.push({ table: tableName, payload });
@@ -31,6 +32,7 @@ function createFakeFrom(tables) {
       then(resolve, reject) {
         let matched = state.insertPayload ? state.insertPayload : rows.filter((r) => state.values.includes(r[state.column]));
         for (const [col, val] of state.filters) matched = matched.filter((r) => r[col] === val);
+        if (state.range) matched = matched.slice(state.range[0], state.range[1] + 1);
         return Promise.resolve({ data: matched, error: null }).then(resolve, reject);
       },
     };

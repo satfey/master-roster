@@ -231,6 +231,37 @@ describe('employeeImportService — Location resolution (store_name / store_id)'
     expect(preview.rows[0].status).toBe('invalid');
     expect(preview.rows[0].errors).toContain('Missing Location');
   });
+
+  // Regression guard: real Employee Master files have inconsistent spacing around the
+  // "DQ<id>-" prefix's dash (confirmed against real Location column values), which a
+  // full-string comparison against store.name would reject even though the store exists.
+  test.each([
+    ['DQ1136-BIG C CHAINGMAI', '1136'],
+    ['DQ1427-ROBINSON SAMUTPRAKARN', '1427'],
+    ['DQ413298-7-11 PRACHA UTHIT-KHUSANG', '413298'], // a 6-digit store id, embedded in a name that itself contains dashes
+    ['DQ1144- LAEMTHONG BANGSAEN', '1144'], // extra space right after the dash
+    ['DQ413302 - 7-11 THIANTALAY SOI 7', '413302'], // spaces on both sides of the dash
+  ])('Location "%s" resolves via its DQ<id> prefix even though it does not match store.name exactly', async (location, expectedStoreId) => {
+    // store.name deliberately does NOT match `location` character-for-character — only the
+    // "DQ<id>" prefix is shared — proving resolution no longer depends on an exact full-string match.
+    fakeStores([{ id: expectedStoreId, name: `DQ${expectedStoreId}-SOME OTHER SPELLING OF THE BRANCH NAME` }]);
+    const buffer = await buildWorkbook([row({ employeeId: '000123', location })]);
+
+    const preview = await previewEmployeeImport(buffer);
+
+    expect(preview.rows[0].status).toBe('valid');
+    expect(preview.rows[0].resolvedStoreId).toBe(expectedStoreId);
+  });
+
+  test('Location still resolves via an exact store.name match when it has no "DQ<id>" prefix at all', async () => {
+    fakeStores([{ id: '1005', name: 'A Branch With No DQ Prefix' }]);
+    const buffer = await buildWorkbook([row({ employeeId: '000123', location: 'A Branch With No DQ Prefix' })]);
+
+    const preview = await previewEmployeeImport(buffer);
+
+    expect(preview.rows[0].status).toBe('valid');
+    expect(preview.rows[0].resolvedStoreId).toBe('1005');
+  });
 });
 
 describe('employeeImportService — optional fields and numeric parsing', () => {

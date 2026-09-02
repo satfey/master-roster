@@ -67,12 +67,37 @@ async function resolveAreaCoaches(rows) {
 }
 
 /**
+ * Picks the authoritative row out of a group of same-Store-ID rows whose
+ * Branch/Area Coach genuinely disagree, using Effective Date: the file
+ * represents a store's info as of different months, so the row for the most
+ * recent month is the current truth — confirmed business rule (e.g. Store
+ * 1370's Area Coach reassignment to Jirasak Bunchui only shows up on its
+ * newer-month row). Returns null when recency itself can't be trusted —
+ * a row with no parseable Effective Date, or two rows tied on the latest
+ * date that still disagree — since guessing wrong there would silently
+ * write incorrect Branch/Area Coach data.
+ */
+function pickMostRecentRow(groupRows) {
+  if (groupRows.some((r) => r.effectiveDate == null)) return null;
+  const sorted = [...groupRows].sort((a, b) => b.effectiveDate.getTime() - a.effectiveDate.getTime());
+  const [newest, runnerUp] = sorted;
+  if (runnerUp && runnerUp.effectiveDate.getTime() === newest.effectiveDate.getTime() && rowsConflict(newest, runnerUp)) {
+    return null;
+  }
+  return newest;
+}
+
+/**
  * Marks every row involved in an intra-file Store ID collision. Rows that
  * agree on Branch and resolved Area Coach are a harmless repeat — only the
  * first occurrence (file order) is treated as the "representative" that
  * actually gets written; the rest are flagged `duplicateInFile` so they
- * resolve to NO_CHANGE without a second write. Rows that disagree are a real
- * conflict and are marked invalid instead of arbitrarily picking one.
+ * resolve to NO_CHANGE without a second write. Rows that disagree are
+ * resolved by Effective Date (see pickMostRecentRow) when possible — the
+ * most-recent-month row becomes the representative, the rest are
+ * `duplicateInFile` (superseded, not an error). Only when recency can't be
+ * determined does this remain a hard error requiring manual review, rather
+ * than arbitrarily picking one.
  */
 function applyDuplicateDetection(rows) {
   const groups = groupByStoreCode(rows);
@@ -84,15 +109,25 @@ function applyDuplicateDetection(rows) {
     const [first, ...rest] = groupRows;
     const conflicting = rest.some((r) => rowsConflict(first, r));
 
-    if (conflicting) {
-      const rowNumbers = groupRows.map((r) => r.rowNumber).join(', ');
-      for (const r of groupRows) {
-        r.errors.push(`Conflicting duplicate Store ID "${r.storeCode}" in file (rows ${rowNumbers}): Branch/Area Coach differ`);
-        duplicateRowNumbers.add(r.rowNumber);
-      }
-    } else {
+    if (!conflicting) {
       for (const r of groupRows) duplicateRowNumbers.add(r.rowNumber);
       for (const r of rest) r.duplicateInFile = true;
+      continue;
+    }
+
+    const winner = pickMostRecentRow(groupRows);
+    if (!winner) {
+      const rowNumbers = groupRows.map((r) => r.rowNumber).join(', ');
+      for (const r of groupRows) {
+        r.errors.push(`Conflicting duplicate Store ID "${r.storeCode}" in file (rows ${rowNumbers}): Branch/Area Coach differ and Effective Date does not resolve which is current`);
+        duplicateRowNumbers.add(r.rowNumber);
+      }
+      continue;
+    }
+
+    for (const r of groupRows) {
+      duplicateRowNumbers.add(r.rowNumber);
+      if (r !== winner) r.duplicateInFile = true;
     }
   }
 
@@ -113,6 +148,17 @@ async function evaluateRows(buffer) {
 
   const pendingAreaCoaches = await resolveAreaCoaches(rows);
   const duplicateRowNumbers = applyDuplicateDetection(rows);
+
+  // A pending (not-yet-existing) Area Coach may have only been referenced by a row that
+  // pickMostRecentRow (inside applyDuplicateDetection) just superseded as duplicateInFile —
+  // that coach is never actually written, so don't create it. Only keep the ones a still-
+  // writable row (no errors, not superseded) actually resolves to.
+  const neededAreaCoachIds = new Set(
+    rows.filter((r) => r.errors.length === 0 && !r.duplicateInFile && r.resolvedAreaCoachId).map((r) => r.resolvedAreaCoachId)
+  );
+  for (const [name, placeholder] of pendingAreaCoaches) {
+    if (!neededAreaCoachIds.has(placeholder.id)) pendingAreaCoaches.delete(name);
+  }
 
   const candidateCodes = [...new Set(rows.filter((r) => r.errors.length === 0 && r.storeCode !== null).map((r) => r.storeCode))];
   const storeMap = await repo.findStoresByCodes(candidateCodes);

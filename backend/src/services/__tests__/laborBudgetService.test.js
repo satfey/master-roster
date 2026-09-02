@@ -9,8 +9,20 @@ jest.mock('../../repositories/laborBudgetRepository', () => ({
   upsertStoreActualHours: jest.fn(),
   findStoreActualHours: jest.fn(),
 }));
+jest.mock('../forecastService', () => ({
+  computeMonthlyForecastedSales: jest.fn(),
+}));
 const laborBudgetRepo = require('../../repositories/laborBudgetRepository');
-const { resolveSalesLevel, matchTier, computeDailyLaborHoursBudget, computeLaborCostBudget } = require('../laborBudgetService');
+const forecastService = require('../forecastService');
+const {
+  resolveSalesLevel,
+  matchTier,
+  computeDailyLaborHoursBudget,
+  computeLaborCostBudget,
+  getMonthlyLaborGuideline,
+  computeMonthlySalesSummary,
+  resolveMonthlyLaborHoursGuideline,
+} = require('../laborBudgetService');
 
 function tier({ storeId = null, salesMin, salesMax, allowedLaborHours = null, weekdayLaborHours = null, weekendLaborHours = null, level = null, standardWorkingHours = null, minStaffCount = null }) {
   return {
@@ -177,5 +189,159 @@ describe('laborBudgetService.computeLaborCostBudget', () => {
     expect(computeLaborCostBudget({ salesLevel: null, guideline: { target_col_percent: 15 } })).toBeNull();
     expect(computeLaborCostBudget({ salesLevel: 50000, guideline: null })).toBeNull();
     expect(computeLaborCostBudget({ salesLevel: 50000, guideline: {} })).toBeNull();
+  });
+});
+
+describe('laborBudgetService.getMonthlyLaborGuideline — Sales/Budget -> Monthly Labor Hours business table', () => {
+  test.each([
+    [0, 840],
+    [100000, 840],
+    [250000, 840],
+    [250001, 780],
+    [330000, 780],
+    [330001, 810],
+    [410000, 810],
+    [410001, 840],
+    [500000, 840],
+    [500001, 990],
+    [540000, 990],
+    [540001, 1020],
+    [620000, 1020],
+    [620001, 1050],
+    [660000, 1050],
+    [660001, 1080],
+    [700000, 1080],
+    [700001, 1140],
+    [780000, 1140],
+    [780001, 1290],
+    [870000, 1290],
+    [870001, 1290],
+    [950000, 1290],
+    [950001, 1290],
+    [1500000, 1290],
+    [735000, 1140], // the given worked example: Store 1001
+    [825000, 1290], // the given worked example: Store 1005
+  ])('getMonthlyLaborGuideline(%i) -> %i hours', (sales, expectedHours) => {
+    const result = getMonthlyLaborGuideline(sales);
+    expect(result).toEqual({ hours: expectedHours, withinRange: true });
+  });
+
+  test('sales just above the table\'s top bound (1,500,001) is reported as outside the guideline range, never extrapolated', () => {
+    expect(getMonthlyLaborGuideline(1500001)).toEqual({ hours: null, withinRange: false });
+  });
+
+  test('a much higher sales figure is still reported as outside the range, not silently assigned the top tier', () => {
+    expect(getMonthlyLaborGuideline(5000000)).toEqual({ hours: null, withinRange: false });
+  });
+
+  test('a negative or null sales figure is reported as outside the range rather than guessed at', () => {
+    expect(getMonthlyLaborGuideline(-1)).toEqual({ hours: null, withinRange: false });
+    expect(getMonthlyLaborGuideline(null)).toEqual({ hours: null, withinRange: false });
+  });
+});
+
+describe('laborBudgetService.computeMonthlySalesSummary — reuses findGrossBudgetRange, no duplicate sales query', () => {
+  test('sums gross_actual for the store + month and maps it through the guideline table', async () => {
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([
+      { report_date: '2026-08-01', gross_budget: 20000, gross_actual: 25000 },
+      { report_date: '2026-08-02', gross_budget: 20000, gross_actual: 24000 },
+    ]);
+
+    const result = await computeMonthlySalesSummary({ storeId: '1001', monthKey: '2026-08' });
+
+    expect(laborBudgetRepo.findGrossBudgetRange).toHaveBeenCalledWith('1001', '2026-08-01', '2026-08-31');
+    expect(result).toEqual({ storeId: '1001', monthKey: '2026-08', monthlySales: 49000, monthlyGuidelineHours: 840, guidelineWithinRange: true });
+  });
+
+  test('store isolation: only rows for the requested storeId are summed (enforced by the repository call, not re-filtered here)', async () => {
+    // findGrossBudgetRange is already store-scoped via its own storeId argument — this test
+    // documents that computeMonthlySalesSummary passes the requested store straight through,
+    // never widening the query.
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([{ report_date: '2026-08-15', gross_budget: null, gross_actual: 300000 }]);
+
+    await computeMonthlySalesSummary({ storeId: '1005', monthKey: '2026-08' });
+
+    expect(laborBudgetRepo.findGrossBudgetRange).toHaveBeenCalledWith('1005', expect.any(String), expect.any(String));
+  });
+
+  test('month isolation: the query range is exactly the requested month, not a wider window', async () => {
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([]);
+
+    await computeMonthlySalesSummary({ storeId: '1001', monthKey: '2026-02' }); // a 28-day month, to prove the end date isn't hardcoded to 30/31
+
+    expect(laborBudgetRepo.findGrossBudgetRange).toHaveBeenCalledWith('1001', '2026-02-01', '2026-02-28');
+  });
+
+  test('sales = 0 for the month still falls within the first bracket (840h), not treated as missing/out-of-range', async () => {
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([{ report_date: '2026-08-01', gross_budget: 0, gross_actual: 0 }]);
+
+    const result = await computeMonthlySalesSummary({ storeId: '1001', monthKey: '2026-08' });
+
+    expect(result).toMatchObject({ monthlySales: 0, monthlyGuidelineHours: 840, guidelineWithinRange: true });
+  });
+
+  test('a store with no sales_report rows for the month at all sums to 0, not null or an error', async () => {
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([]);
+
+    const result = await computeMonthlySalesSummary({ storeId: '1001', monthKey: '2026-08' });
+
+    expect(result).toMatchObject({ monthlySales: 0, monthlyGuidelineHours: 840, guidelineWithinRange: true });
+  });
+
+  test('a null gross_actual on some days is treated as 0 for those days, not NaN or skipped entirely', async () => {
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([
+      { report_date: '2026-08-01', gross_budget: 20000, gross_actual: null },
+      { report_date: '2026-08-02', gross_budget: 20000, gross_actual: 40000 },
+    ]);
+
+    const result = await computeMonthlySalesSummary({ storeId: '1001', monthKey: '2026-08' });
+
+    expect(result.monthlySales).toBe(40000);
+  });
+
+  test('monthly sales far outside the guideline range (> 1,500,000) is reported as outside the range, not silently assigned a tier', async () => {
+    laborBudgetRepo.findGrossBudgetRange.mockResolvedValue([{ report_date: '2026-08-01', gross_budget: null, gross_actual: 2000000 }]);
+
+    const result = await computeMonthlySalesSummary({ storeId: '1001', monthKey: '2026-08' });
+
+    expect(result).toMatchObject({ monthlySales: 2000000, monthlyGuidelineHours: null, guidelineWithinRange: false });
+  });
+});
+
+describe('resolveMonthlyLaborHoursGuideline — the number monthlyCapacityService actually applies as the roster generation ceiling', () => {
+  test('a manually-entered monthly_labor_hours always wins, and the sales forecast is never even consulted', async () => {
+    const result = await resolveMonthlyLaborHoursGuideline({ storeId: '1005', monthKey: '2026-08', manualMonthlyLaborHours: 1000 });
+
+    expect(result).toMatchObject({ hours: 1000, source: 'MANUAL' });
+    expect(forecastService.computeMonthlyForecastedSales).not.toHaveBeenCalled();
+  });
+
+  test('with no manual value, falls back to this month\'s FORECASTED sales (not an actual monthly total, which does not exist yet for a future month)', async () => {
+    forecastService.computeMonthlyForecastedSales.mockResolvedValue(200000); // -> 840h bracket
+
+    const result = await resolveMonthlyLaborHoursGuideline({ storeId: '1005', monthKey: '2026-08', manualMonthlyLaborHours: null });
+
+    expect(forecastService.computeMonthlyForecastedSales).toHaveBeenCalledWith({ storeId: '1005', monthKey: '2026-08' });
+    expect(result).toMatchObject({ hours: 840, source: 'SALES_FORECAST', monthlySales: 200000, guidelineWithinRange: true });
+  });
+
+  test('a forecasted monthly sales figure outside the guideline table (> 1,500,000) resolves to null hours, never a guessed/extrapolated value', async () => {
+    forecastService.computeMonthlyForecastedSales.mockResolvedValue(2000000);
+
+    const result = await resolveMonthlyLaborHoursGuideline({ storeId: '1005', monthKey: '2026-08', manualMonthlyLaborHours: undefined });
+
+    expect(result).toMatchObject({ hours: null, source: 'SALES_FORECAST', guidelineWithinRange: false });
+  });
+});
+
+describe('regression guard: the Monthly Labor Hours guideline is never used as a fill target by the roster generator', () => {
+  test('rosterGenerationService still never imports getMonthlyLaborGuideline/computeMonthlySalesSummary/resolveMonthlyLaborHoursGuideline directly — it only ever sees the single resolved hours number via monthlyCapacityService, applied purely as a ceiling (see monthlyCapacityService.test.js), never a fill target', () => {
+    const fs = require('fs');
+    const path = require('path');
+    const source = fs.readFileSync(path.join(__dirname, '../rosterGenerationService.js'), 'utf8');
+
+    expect(source).not.toContain('getMonthlyLaborGuideline');
+    expect(source).not.toContain('computeMonthlySalesSummary');
+    expect(source).not.toContain('resolveMonthlyLaborHoursGuideline');
   });
 });

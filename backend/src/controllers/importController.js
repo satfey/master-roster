@@ -27,7 +27,9 @@ async function storeImport(req, res) {
 /**
  * Generic bulk importer: POST /api/import, form-data { file, entity }.
  * `entity` selects which registered table to import into (see
- * services/genericImport/importRegistry.js) — e.g. employee, store, laborGuideline.
+ * services/genericImport/importRegistry.js) — currently: store, laborGuideline.
+ * Employee import has its own dedicated endpoint (POST /employee/import) —
+ * it is NOT registered here.
  */
 async function genericImport(req, res) {
   if (!req.file) return failure(res, 'No file uploaded', 400);

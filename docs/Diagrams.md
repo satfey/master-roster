@@ -49,7 +49,7 @@ sequenceDiagram
     S->>S: size staffing per hour from the forecast, productivity floor, and daily/monthly budgets
     loop each day
         S->>S: guarantee opening (09:00) + closing (22:00) coverage, then fill to the operational minimum
-        S->>S: Full-time = 8 working hours + 1h break (9h clock span); Part-time = 4-6h
+        S->>S: Full-time = 8 working hours + 1h break (9h clock span); Part-time = 4-8h
         S->>S: enforce weekly hours, 6-consecutive-day rest, no double booking, monthly capacity
     end
     S->>DB: replace Shift rows for the range (create/reuse one Roster row per ISO week)

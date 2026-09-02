@@ -132,22 +132,19 @@ const upload = multer({ storage: multer.memoryStorage() });
  *         $ref: '#/components/responses/ServerError'
  * /sales/report/import:
  *   post:
- *     summary: Bulk import a fixed-layout sales report via Excel (.xlsx)
+ *     summary: Start a Sales Report import job (Excel .xlsx) — returns a jobId immediately, runs in the background
  *     description: >
- *       Every row that passes validation is written via an atomic upsert on
- *       the (store_id, report_date) unique constraint: a key not already in
- *       sales_report is inserted, a key that already exists is overwritten
- *       in place with this file's data (the newly uploaded file is the
- *       source of truth — this is never rejected as a duplicate, and never
- *       raises a unique-violation). A (store_id, report_date) repeated more
- *       than once within this same file is resolved deterministically before
- *       writing — the last occurrence in the file wins; earlier ones are
- *       skipped (see `skippedDuplicatesInFile`). Only rows that fail
- *       validation are excluded (see `failed`). Store IDs with no matching
- *       existing store are auto-created — the Excel Store ID becomes
- *       store.id directly (one store per distinct Store ID, even if it
- *       appears on many rows) before the sales report rows are written —
- *       see `storesCreated` in the response.
+ *       Runs as a background job rather than one long request/response: a
+ *       large file's actual database write can take minutes, so this
+ *       endpoint only creates the job and returns its id right away (202,
+ *       not 200/201). Poll GET /sales/report/import/{jobId}/progress for
+ *       real status until it reaches status "completed" or "failed" — the
+ *       final import result (same shape this endpoint used to return
+ *       synchronously: total/imported/inserted/updated/skippedDuplicatesInFile/
+ *       storesCreated/failed) is on that job's `result` field once completed.
+ *       The import logic itself — validation, the (store_id, report_date)
+ *       atomic upsert, in-file duplicate resolution, auto-created stores —
+ *       is unchanged; only how progress is reported is new.
  *     tags: [Sales Report]
  *     requestBody:
  *       required: true
@@ -161,8 +158,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 type: string
  *                 format: binary
  *     responses:
- *       200:
- *         description: Import result (200, not 201 — the response wraps a summary object rather than the created records).
+ *       202:
+ *         description: Import job created and running in the background.
  *         content:
  *           application/json:
  *             schema:
@@ -173,46 +170,12 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                     data:
  *                       type: object
  *                       properties:
- *                         total: { type: integer }
- *                         imported: { type: integer, description: 'Rows written this commit, insert + update combined.' }
- *                         inserted: { type: integer, description: '(store_id, report_date) not previously in sales_report.' }
- *                         updated: { type: integer, description: '(store_id, report_date) already existed and was overwritten with this file''s data.' }
- *                         skippedDuplicatesInFile: { type: integer, description: 'Rows sharing a (store_id, report_date) with a later row in this same file — not written, the later row was used instead.' }
- *                         storesCreated:
- *                           type: array
- *                           description: Stores auto-created during this commit because their Store ID had no matching existing store.
- *                           items:
- *                             type: object
- *                             properties:
- *                               id: { type: string, example: '2002', description: 'The canonical Store ID, taken directly from the Excel file — not a UUID.' }
- *                               storeId: { type: string, example: '2002', description: 'Alias for id.' }
- *                               storeCode: { type: string, example: '2002' }
- *                               name: { type: string, nullable: true, example: 'New Store B' }
- *                         failed:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               rowNumber: { type: integer }
- *                               reportStoreId: { type: integer, nullable: true }
- *                               errors: { type: array, items: { type: string } }
+ *                         jobId: { type: string, format: uuid }
  *             example:
  *               success: true
- *               message: Sales report data imported
+ *               message: Import started
  *               data:
- *                 total: 10
- *                 imported: 9
- *                 inserted: 6
- *                 updated: 3
- *                 skippedDuplicatesInFile: 0
- *                 storesCreated:
- *                   - id: '2002'
- *                     storeId: '2002'
- *                     name: New Store B
- *                 failed:
- *                   - rowNumber: 5
- *                     reportStoreId: 1001
- *                     errors: ['Missing Date (column E)']
+ *                 jobId: 8b1e9c2e-2f1a-4b3a-9e2a-2b6b9a3d4c5e
  *       400:
  *         description: No file was uploaded.
  *         content:
@@ -225,8 +188,93 @@ const upload = multer({ storage: multer.memoryStorage() });
  *         $ref: '#/components/responses/ForbiddenError'
  *       500:
  *         $ref: '#/components/responses/ServerError'
+ * /sales/report/import/{jobId}/progress:
+ *   get:
+ *     summary: Real progress for a Sales Report import job started via POST /sales/report/import
+ *     description: >
+ *       Reflects the job's ACTUAL state — stage, elapsed time, and (once
+ *       completed) the real result — never a simulated/interpolated
+ *       percentage. Stages run in order: parsing -> transforming ->
+ *       validating -> database_insert -> completed (or failed at any
+ *       point). The database_insert stage is a single atomic upsert (see
+ *       the sales_report write itself) — Postgres gives no mid-statement
+ *       row-count signal for it, so that stage reports `statusMessage` +
+ *       elapsed time only, not a fabricated row count/percent; `stages[]`
+ *       gives the client everything needed to render a "done stages get a
+ *       checkmark, current stage shows elapsed time" panel. A job persists
+ *       in memory for 1 hour after it starts (long enough to check back
+ *       after a page refresh), then is forgotten.
+ *     tags: [Sales Report]
+ *     parameters:
+ *       - in: path
+ *         name: jobId
+ *         required: true
+ *         schema: { type: string, format: uuid }
+ *     responses:
+ *       200:
+ *         description: Current job status.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         jobId: { type: string, format: uuid }
+ *                         status: { type: string, enum: [importing, completed, failed] }
+ *                         stage: { type: string, enum: [parsing, transforming, validating, database_insert, completed, failed] }
+ *                         statusMessage: { type: string, example: 'Writing 100000 rows to database...' }
+ *                         totalRows: { type: integer, nullable: true, description: 'Known once the parsing stage finishes.' }
+ *                         elapsedSeconds: { type: number, example: 151.2 }
+ *                         stages:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               name: { type: string, enum: [parsing, transforming, validating, database_insert] }
+ *                               status: { type: string, enum: [pending, in_progress, completed, failed] }
+ *                               durationSeconds: { type: number, nullable: true }
+ *                         error: { type: string, nullable: true }
+ *                         result: { type: object, nullable: true, description: 'The same shape POST /sales/report/import used to return synchronously — only present once status is "completed".' }
+ *                         startedAt: { type: string, format: date-time }
+ *                         completedAt: { type: string, format: date-time, nullable: true }
+ *             example:
+ *               success: true
+ *               message: OK
+ *               data:
+ *                 jobId: 8b1e9c2e-2f1a-4b3a-9e2a-2b6b9a3d4c5e
+ *                 status: importing
+ *                 stage: database_insert
+ *                 statusMessage: Writing 100000 rows to database...
+ *                 totalRows: 100000
+ *                 elapsedSeconds: 151.2
+ *                 stages:
+ *                   - { name: parsing, status: completed, durationSeconds: 13.5 }
+ *                   - { name: transforming, status: completed, durationSeconds: 1.0 }
+ *                   - { name: validating, status: completed, durationSeconds: 1.2 }
+ *                   - { name: database_insert, status: in_progress, durationSeconds: null }
+ *                 error: null
+ *                 result: null
+ *                 startedAt: '2026-09-02T10:00:00.000Z'
+ *                 completedAt: null
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       404:
+ *         description: No job with this id (never existed, or its 1-hour retention window has passed).
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ApiError' }
+ *             example: { success: false, message: 'Import job not found', errors: null }
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
  */
 router.post('/import/preview', authenticate, authorize('sales:import'), upload.single('file'), salesReportController.salesReportImportPreview);
+router.get('/import/:jobId/progress', authenticate, authorize('sales:import'), salesReportController.salesReportImportProgress);
 router.post('/import', authenticate, authorize('sales:import'), upload.single('file'), salesReportController.salesReportImport);
 
 module.exports = router;

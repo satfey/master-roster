@@ -16,8 +16,8 @@ async function findActiveEmployees(storeId) {
 /** Every shift already scheduled for a set of employees within a date range (across ANY roster/week) — used to enforce the employee's monthly hour cap across week boundaries, and to detect overlaps against shifts outside the range currently being (re)generated. */
 async function findShiftsForEmployeesInRange(employeeIds, fromDate, toDate) {
   if (!employeeIds.length) return [];
-  const shifts = await runInBatches(employeeIds, (batch) =>
-    supabase.from('shift').select('*').in('employee_id', batch).gte('shift_date', fromDate).lte('shift_date', toDate)
+  const shifts = await runInBatches(employeeIds, (batch, { from, to }) =>
+    supabase.from('shift').select('*').in('employee_id', batch).gte('shift_date', fromDate).lte('shift_date', toDate).range(from, to)
   );
   return shifts;
 }

@@ -1,5 +1,6 @@
 const rosterRepo = require('../repositories/rosterRepository');
 const laborBudgetRepo = require('../repositories/laborBudgetRepository');
+const { resolveMonthlyLaborHoursGuideline } = require('./laborBudgetService');
 const { eachDateInRange, monthRange } = require('../utils/dateRange');
 
 function round2(n) {
@@ -23,6 +24,14 @@ function round2(n) {
  * regenerated aren't counted against themselves before they're replaced.
  * Actuals are never excluded this way: once entered, they're ground truth
  * regardless of what's being regenerated.
+ *
+ * The guideline itself (`monthlyGuideline` below) is resolved by
+ * laborBudgetService.resolveMonthlyLaborHoursGuideline: the store's own
+ * manually-entered labor_guideline.monthly_labor_hours when set, otherwise
+ * this month's Sales -> Labor Hours table bracket keyed to FORECASTED
+ * monthly sales (there's no actual monthly total yet for a month roster
+ * generation is still scheduling). Either way it stays a ceiling only —
+ * this function only ever subtracts against it, never fills toward it.
  */
 async function computeMonthlyCapacity({ storeId, monthKey, guideline, excludeDateRange }) {
   const { start, end } = monthRange(monthKey);
@@ -48,10 +57,13 @@ async function computeMonthlyCapacity({ storeId, monthKey, guideline, excludeDat
   });
 
   const hoursUsedOrCommitted = round2(byDate.reduce((sum, d) => sum + (d.actualHours != null ? d.actualHours : d.plannedHours), 0));
-  const monthlyGuideline = resolvedGuideline?.monthly_labor_hours != null ? Number(resolvedGuideline.monthly_labor_hours) : null;
+  const manualMonthlyLaborHours = resolvedGuideline?.monthly_labor_hours != null ? Number(resolvedGuideline.monthly_labor_hours) : null;
+  const guidelineResult = await resolveMonthlyLaborHoursGuideline({ storeId, monthKey, manualMonthlyLaborHours });
+  const monthlyGuideline = guidelineResult.hours;
+  const monthlyGuidelineSource = guidelineResult.source;
   const remainingHours = monthlyGuideline != null ? round2(monthlyGuideline - hoursUsedOrCommitted) : null;
 
-  return { storeId, monthKey, monthlyGuideline, hoursUsedOrCommitted, remainingHours, byDate };
+  return { storeId, monthKey, monthlyGuideline, monthlyGuidelineSource, hoursUsedOrCommitted, remainingHours, byDate };
 }
 
 module.exports = { computeMonthlyCapacity };

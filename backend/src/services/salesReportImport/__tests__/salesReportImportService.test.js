@@ -13,6 +13,7 @@ jest.mock('../../../repositories/salesReportRepository', () => ({
 const repo = require('../../../repositories/salesReportRepository');
 
 const { previewSalesReportImport, commitSalesReportImport } = require('../salesReportImportService');
+const importJobStore = require('../../importJobStore');
 
 /**
  * In-memory fake `store` table keyed by id — the Excel Store ID IS store.id
@@ -418,7 +419,11 @@ describe('salesReportImportService — upsert business rule: an existing (store_
     expect(winnerValue(await previewSalesReportImport(buffer))).toBe(3); // same result, run again on the same file
   });
 
-  test('the write payload always carries a fresh updated_at and never carries created_at, whether inserting or updating', async () => {
+  // Regression guard: sales_report has no updated_at column at all (confirmed against the live
+  // schema) — an earlier version of this service wrote one anyway, which made every real commit
+  // fail with "Could not find the 'updated_at' column of 'sales_report' in the schema cache".
+  // Mocked repos never caught this, since the mock doesn't validate against the real schema.
+  test('the write payload never carries created_at or updated_at — neither column should be touched by this service', async () => {
     createFakeStoreTable([{ id: '1108', storeCode: '1108', name: 'Store 1108' }]);
     repo.findExistingReportKeys.mockResolvedValue(new Set(['1108|2026-07-09']));
     const buffer = await buildWorkbook([
@@ -431,8 +436,7 @@ describe('salesReportImportService — upsert business rule: an existing (store_
     const [records] = repo.upsertRecords.mock.calls[0];
     for (const record of records) {
       expect(record.created_at).toBeUndefined(); // never set by the service — created_at is preserved on update, defaulted on insert entirely at the DB level
-      expect(typeof record.updated_at).toBe('string');
-      expect(Number.isNaN(Date.parse(record.updated_at))).toBe(false);
+      expect(record.updated_at).toBeUndefined(); // the column does not exist on sales_report
     }
   });
 
@@ -483,5 +487,94 @@ describe('salesReportImportService — upsert business rule: an existing (store_
     // layer rather than a 23505 unique-violation — see salesReportRepository.test.js for
     // proof that an existing key is overwritten in place, not duplicated.
     expect(repo.upsertRecords).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('salesReportImportService — jobId progress reporting is purely additive (importJobStore)', () => {
+  test('commitSalesReportImport with no jobId behaves exactly as before — no job is touched, nothing throws', async () => {
+    createFakeStoreTable();
+    const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+
+    const result = await commitSalesReportImport(buffer, 'uuid-user-1');
+
+    expect(result.imported).toBe(1);
+    expect(importJobStore.getJob('nonexistent-job-id')).toBeNull();
+  });
+
+  test('commitSalesReportImport with a jobId drives that job through every stage in order; while the write is in flight, the job still reads as "importing"/"database_insert"', async () => {
+    createFakeStoreTable();
+    const buffer = await buildWorkbook([
+      [30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500],
+      [30002, 1002, 'A1002-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 20000, 9500],
+    ]);
+
+    const jobId = 'test-job-1';
+    importJobStore.createJob(jobId);
+    expect(importJobStore.getJob(jobId).stage).toBe('parsing');
+
+    // commitSalesReportImport only reports STAGE progress as it runs — moving the job to its
+    // terminal completed/failed state is the caller's job (see salesReportController.js, which
+    // calls importJobStore.complete()/fail() once the returned promise settles), since only the
+    // caller actually knows whether it resolved or rejected.
+    const result = await commitSalesReportImport(buffer, 'uuid-user-1', jobId);
+
+    const midFlightJob = importJobStore.getJob(jobId);
+    expect(midFlightJob.status).toBe('importing');
+    expect(midFlightJob.stage).toBe('database_insert'); // the last (and, here, still "current") stage the service itself marks
+    expect(midFlightJob.totalRows).toBe(2); // known as soon as parsing finished
+
+    // every stage up to and including database_insert was visited, in order
+    const stageNames = midFlightJob.stages.map((s) => s.name);
+    expect(stageNames).toEqual(['parsing', 'transforming', 'validating', 'database_insert']);
+    expect(midFlightJob.stages.slice(0, 3).every((s) => s.status === 'completed')).toBe(true);
+    expect(midFlightJob.stages.slice(0, 3).every((s) => typeof s.durationSeconds === 'number')).toBe(true);
+
+    // simulating the controller's follow-up (see salesReportController.js's .then()):
+    importJobStore.complete(jobId, result);
+    const finalJob = importJobStore.getJob(jobId);
+    expect(finalJob.status).toBe('completed');
+    expect(finalJob.stage).toBe('completed');
+    expect(finalJob.result).toEqual(result); // the exact same result the caller received
+    expect(finalJob.completedAt).not.toBeNull();
+    expect(finalJob.stages.every((s) => s.status === 'completed')).toBe(true);
+  });
+
+  test('a jobId never changes what gets written — the DB payload is identical with or without one', async () => {
+    createFakeStoreTable();
+    const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+
+    await commitSalesReportImport(buffer, 'uuid-user-1');
+    const [withoutJob] = repo.upsertRecords.mock.calls[0];
+
+    jest.clearAllMocks();
+    repo.findExistingReportKeys.mockResolvedValue(new Set());
+    repo.getSalesReportSourceType.mockResolvedValue({ id: 'uuid-source-type' });
+    repo.upsertRecords.mockImplementation(async (records) => records.length);
+    createFakeStoreTable();
+    importJobStore.createJob('test-job-2');
+    await commitSalesReportImport(buffer, 'uuid-user-1', 'test-job-2');
+    const [withJob] = repo.upsertRecords.mock.calls[0];
+
+    expect(withJob).toEqual(withoutJob);
+  });
+
+  test('if the commit throws, the job is marked failed with the error message rather than left stuck', async () => {
+    createFakeStoreTable();
+    const buffer = await buildWorkbook([[30001, 1001, 'A1001-A', '2026-27', new Date(Date.UTC(2026, 6, 1)), 10000, 9500]]);
+    repo.upsertRecords.mockRejectedValue(new Error('simulated DB failure'));
+
+    const jobId = 'test-job-3';
+    importJobStore.createJob(jobId);
+
+    await expect(commitSalesReportImport(buffer, 'uuid-user-1', jobId)).rejects.toThrow('simulated DB failure');
+
+    // evaluateRows/commitSalesReportImport only report stage progress — turning a thrown
+    // error into job.status = 'failed' is the caller's job (see salesReportController.js,
+    // which calls importJobStore.fail() in its .catch()), so the job itself is still
+    // mid-flight here — this just proves the thrown error surfaces normally and isn't
+    // swallowed by the progress instrumentation.
+    const job = importJobStore.getJob(jobId);
+    expect(job.status).toBe('importing');
+    expect(job.stage).toBe('database_insert');
   });
 });

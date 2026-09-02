@@ -50,7 +50,9 @@ app.use(morgan(process.env.NODE_ENV === 'development' ? 'dev' : 'combined'));
  */
 app.get('/health', (req, res) => res.json({ status: 'ok', timestamp: new Date().toISOString() }));
 
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// persistAuthorization: keeps the token entered via Authorize across page reloads,
+// so testing an upload endpoint doesn't require re-authorizing every time.
+app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, { swaggerOptions: { persistAuthorization: true } }));
 app.use('/api', routes);
 
 app.use((req, res) => res.status(404).json({ success: false, message: 'Route not found' }));

@@ -7,10 +7,11 @@ async function findGrossBudget(storeId, date) {
   return data ? Number(data.gross_budget) : null;
 }
 
+/** gross_actual is included alongside gross_budget so callers needing actual sales (e.g. a monthly sales total) can reuse this same query instead of a near-duplicate one. */
 async function findGrossBudgetRange(storeId, startDate, endDate) {
   const { data, error } = await supabase
     .from('sales_report')
-    .select('report_date, gross_budget')
+    .select('report_date, gross_budget, gross_actual')
     .eq('store_id', storeId)
     .gte('report_date', startDate)
     .lte('report_date', endDate);

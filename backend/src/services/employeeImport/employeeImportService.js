@@ -31,12 +31,27 @@ function normalizeName(value) {
   return value ? value.trim().toLowerCase().replace(/\s+/g, ' ') : null;
 }
 
+// The real Employee Master file's Location column holds store.name directly
+// (e.g. "DQ1005-CENTER ONE", "DQ413302 - 7-11 THIANTALAY SOI 7") — the same
+// "DQ<store.id>-<branch name>" convention store.name itself already follows.
+// Confirmed against real Location values: spacing around the dash after the
+// id is inconsistent between files ("DQ1144- LAEMTHONG BANGSAEN",
+// "DQ413302 - 7-11 ...") and doesn't always match store.name's own spacing
+// exactly, so a full-string comparison silently rejects valid rows even
+// though the id itself is always reliably present right after "DQ".
+function extractStoreIdFromLocationPrefix(value) {
+  const match = value ? String(value).trim().match(/^DQ(\d+)/i) : null;
+  return match ? match[1] : null;
+}
+
 /**
- * Resolves every row's "Location" to a store — tries store.id (the
- * canonical Store ID, e.g. "1005") first, then store.name
- * (case/whitespace-insensitive), since the real file's Location values
- * haven't been confirmed to hold one or the other. Never invents a store or
- * a UUID: no match (or a blank Location) marks the row invalid, since
+ * Resolves every row's "Location" to a store. Tries, in order: (1) the
+ * store.id embedded in a "DQ<id>-..." prefix — the most reliable signal,
+ * since it's unaffected by spacing/formatting differences in the branch-name
+ * portion; (2) store.id verbatim (a Location that's just the bare id, e.g.
+ * "1005"); (3) store.name (case/whitespace-insensitive) for a Location that
+ * doesn't follow the DQ-prefix convention at all. Never invents a store or a
+ * UUID: no match (or a blank Location) marks the row invalid, since
  * employee.store_id is NOT NULL in the current schema.
  */
 async function resolveLocations(rows) {
@@ -53,7 +68,8 @@ async function resolveLocations(rows) {
       row.errors.push('Missing Location');
       continue;
     }
-    const match = byId.get(row.storeName) || byName.get(normalizeName(row.storeName));
+    const prefixId = extractStoreIdFromLocationPrefix(row.storeName);
+    const match = (prefixId && byId.get(prefixId)) || byId.get(row.storeName) || byName.get(normalizeName(row.storeName));
     if (!match) {
       row.errors.push(`Unknown Location: "${row.storeName}"`);
     } else {

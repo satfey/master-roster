@@ -22,7 +22,7 @@ const schemas = {
   },
   Identity: {
     type: 'object',
-    description: 'The requesting identity attached to req.user. Currently always a fixed system identity — see /login.',
+    description: 'The requesting identity attached to req.user, resolved fresh from the database on every request from the Bearer token\'s user id — see /login and /me.',
     properties: {
       id: { type: 'string', format: 'uuid', nullable: true },
       name: { type: 'string', example: 'John Admin' },
@@ -292,10 +292,16 @@ const options = {
       description:
         'AI Workforce Scheduling System — REST API documentation. ' +
         'All responses are wrapped as `{ success, message, data }` (see ApiResponse) on success, ' +
-        'or `{ success, message, errors }` (see ApiError) on failure. ' +
-        'NOTE: real login/JWT issuance is not implemented yet (see /login) — the API currently ' +
-        'runs every request as a fixed system identity — but all protected routes below document ' +
-        'the intended Bearer-auth contract (see securitySchemes.bearerAuth) for when it lands.',
+        'or `{ success, message, errors }` (see ApiError) on failure.\n\n' +
+        '**Authentication (real JWT, not a stub) — to call any endpoint below from this page:**\n' +
+        '1. Expand `POST /login` below, click *Try it out*, submit your email + password, and copy the `token` value from the response.\n' +
+        '2. Click the **Authorize** button at the top of this page.\n' +
+        '3. Paste **only the raw token** into the value field — do NOT type `Bearer ` in front of it. ' +
+        'This scheme is `type: http, scheme: bearer`, so Swagger UI already prepends `Bearer ` for you; ' +
+        'typing it yourself sends `Authorization: Bearer Bearer <token>`, which fails with 401 "Invalid or expired token".\n' +
+        '4. Click **Authorize**, then **Close** — every request from this page now carries your token automatically.\n\n' +
+        'Users/roles/store access are configured directly in the database (see `docs/API.md`) — there is no public registration endpoint. ' +
+        'An Admin whose role has `permissions: ["*"]` passes every `authorize(...)` check on every endpoint below, upload endpoints included.',
     },
     servers: [{ url: '/api', description: 'API base path' }],
     components: {

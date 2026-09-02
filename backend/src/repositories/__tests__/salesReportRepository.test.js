@@ -23,7 +23,7 @@ function createFakeFrom(tables) {
   const upsertCalls = [];
   const from = jest.fn((tableName) => {
     const rows = tables[tableName] || (tables[tableName] = []);
-    const state = { column: null, values: null, filters: [], insertPayload: null, upsertResults: null };
+    const state = { column: null, values: null, filters: [], insertPayload: null, upsertResults: null, range: null };
     const builder = {
       select: jest.fn(() => builder),
       in: jest.fn((column, values) => {
@@ -34,6 +34,7 @@ function createFakeFrom(tables) {
       }),
       gte: jest.fn((col, val) => { state.filters.push(['gte', col, val]); return builder; }),
       lte: jest.fn((col, val) => { state.filters.push(['lte', col, val]); return builder; }),
+      range: jest.fn((from2, to2) => { state.range = [from2, to2]; return builder; }),
       insert: jest.fn((payload) => {
         state.insertPayload = payload;
         insertCalls.push({ table: tableName, payload });
@@ -63,6 +64,7 @@ function createFakeFrom(tables) {
         for (const [op, col, val] of state.filters) {
           matched = matched.filter((r) => (op === 'gte' ? r[col] >= val : r[col] <= val));
         }
+        if (state.range) matched = matched.slice(state.range[0], state.range[1] + 1);
         return Promise.resolve({ data: matched, error: null }).then(resolve, reject);
       },
     };
@@ -129,6 +131,32 @@ describe('salesReportRepository — batched .in() lookups (UND_ERR_HEADERS_OVERF
     expect(keys.size).toBe(200);
     expect(keys.has(repo.recordKey(storeIds[0], '2026-07-15'))).toBe(true);
     expect(keys.has(repo.recordKey(storeIds[0], '2020-01-01'))).toBe(false);
+  });
+
+  // Regression test for a real bug found live: a single batch (up to 100 store ids) can easily
+  // match more rows than PostgREST's default per-request page cap (confirmed live: 1023 real
+  // matching rows came back as exactly 1000, no error) — findExistingReportKeys used to read
+  // each batch only once, so a store with a long sales history silently lost some of its
+  // "already exists" keys, misclassifying real updates as brand-new inserts (the app-level
+  // upsert still correctly overwrote them via ON CONFLICT, so no data was actually lost, but the
+  // reported inserted/updated counts were wrong and looked like the import hadn't really landed).
+  test('findExistingReportKeys finds every matching key even when a single batch matches more than 1000 rows (PostgREST default page cap)', async () => {
+    const storeIds = ['00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000002']; // both fit in one 100-id batch
+    const rows = [];
+    for (const storeId of storeIds) {
+      for (let d = 0; d < 600; d++) {
+        const date = new Date(Date.UTC(2026, 0, 1) + d * 86400000).toISOString().slice(0, 10);
+        rows.push({ store_id: storeId, report_date: date });
+      }
+    }
+    const { from } = createFakeFrom({ sales_report: rows });
+    mockFromImpl = from;
+
+    const dates = [new Date(Date.UTC(2020, 0, 1)), new Date(Date.UTC(2030, 0, 1))]; // wide enough to cover every row above
+    const keys = await repo.findExistingReportKeys(storeIds, dates);
+
+    expect(rows.length).toBeGreaterThan(1000); // sanity: this test only proves something if the real match count exceeds the page cap
+    expect(keys.size).toBe(rows.length); // every single one found, not capped at 1000
   });
 
   test('an empty id list never issues a request (existing short-circuit is preserved)', async () => {

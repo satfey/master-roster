@@ -5,12 +5,12 @@ function recordKey(storeId, date) {
   return `${storeId}|${iso}`;
 }
 
-/** Looks up stores by their Excel "CODE" column value. Returns a Map keyed by store code. */
+/** Looks up stores by their Excel "CODE" column value — store.id IS the canonical Store ID (store.code does not exist as a column). Returns a Map keyed by store id. */
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
-  const { data: stores, error } = await supabase.from('store').select('*').in('code', codes);
+  const { data: stores, error } = await supabase.from('store').select('*').in('id', codes);
   if (error) throw error;
-  return new Map(stores.map((s) => [s.code, s]));
+  return new Map(stores.map((s) => [s.id, s]));
 }
 
 async function getExcelSourceType() {

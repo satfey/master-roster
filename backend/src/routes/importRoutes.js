@@ -6,65 +6,19 @@ const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
 /**
+ * NOTE: POST /store/import (importService.importStores — upserts stores by
+ * NAME, columns "name, region") is intentionally undocumented here — no
+ * frontend caller, no internal caller, and it's fully superseded by the
+ * real Store Master Import (POST /store/master/import, matching the actual
+ * company file: Effective Date/ID/BRANCH/Zone Update + Area Coach
+ * resolution). The route still exists and works — only removed from Swagger.
+ */
+
+/**
  * @swagger
- * /store/import:
- *   post:
- *     summary: Bulk import store data via Excel (.xlsx)
- *     description: Upserts by store name — updates the region if the store already exists, otherwise creates it.
- *     tags: [Import]
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             required: [file]
- *             properties:
- *               file:
- *                 type: string
- *                 format: binary
- *                 description: .xlsx file with columns name, region
- *     responses:
- *       200:
- *         description: Import result
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/ApiResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         imported: { type: integer }
- *                         total: { type: integer }
- *                         errors:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               row: { type: integer }
- *                               message: { type: string }
- *             example:
- *               success: true
- *               message: Store data imported
- *               data: { imported: 3, total: 3, errors: [] }
- *       400:
- *         description: No file was uploaded.
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/ApiError' }
- *             example: { success: false, message: 'No file uploaded', errors: null }
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       403:
- *         $ref: '#/components/responses/ForbiddenError'
- *       500:
- *         $ref: '#/components/responses/ServerError'
  * /import:
  *   post:
- *     summary: Generic bulk import via Excel (.xlsx) into a registered table (employee, store, laborGuideline)
+ *     summary: Generic bulk import via Excel (.xlsx) into a registered table (store, laborGuideline)
  *     description: >
  *       Validates every row up front and only inserts if the whole file is
  *       clean. **Note:** unlike every other endpoint in this API, this one

@@ -1,7 +1,13 @@
+const multer = require('multer');
+
 // Centralized error handler. Combined with `express-async-errors`, any thrown
 // error (sync or async) inside a route handler will be routed here.
 function errorHandler(err, req, res, next) {
-  const status = err.status || 500;
+  // A MulterError (wrong multipart field name, file too large, etc.) is a
+  // client mistake, not a server fault — without this, it falls through to
+  // the 500 branch below with no `status` set, which is misleading for
+  // something as ordinary as uploading a file under the wrong field name.
+  const status = err instanceof multer.MulterError ? 400 : err.status || 500;
   const message = err.message || 'Internal server error';
 
   // Expected client errors (bad input, validation, 404s, etc.) are normal,

@@ -25,6 +25,15 @@ const upload = multer({ storage: multer.memoryStorage() });
  *       flagged via `willCreateStore: true` here, and the store is
  *       auto-created on commit (see /sales/by-hour/import) using the Excel
  *       Store ID directly as store.id.
+ *
+ *       A (store_id, report_month, hour) that already exists in
+ *       sales_by_hour is NOT a rejected duplicate — the newly uploaded file
+ *       is the source of truth, so that row is flagged `status: update` here
+ *       and will overwrite the existing row on commit (see
+ *       /sales/by-hour/import). Only a repeat of the same (store_id,
+ *       report_month, hour) *within this same file* is a real in-file
+ *       duplicate (`status: duplicate_in_file`) — the last occurrence in the
+ *       file wins and is written; earlier ones are not.
  *     tags: [Sales By Hour]
  *     requestBody:
  *       required: true
@@ -55,9 +64,11 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                       type: object
  *                       properties:
  *                         totalRows: { type: integer }
- *                         validRows: { type: integer }
+ *                         newRows: { type: integer, description: 'Rows with no existing (store_id, report_month, hour) — will be INSERTed.' }
+ *                         updateRows: { type: integer, description: 'Rows whose (store_id, report_month, hour) already exists — will be UPDATEd with this file''s data.' }
+ *                         validRows: { type: integer, description: 'newRows + updateRows — total rows that will actually be written, insert + update combined.' }
  *                         invalidRows: { type: integer }
- *                         duplicateRows: { type: integer }
+ *                         duplicateInFileRows: { type: integer, description: 'Rows sharing a (store_id, report_month, hour) with a later row in this same file — only the last occurrence is written.' }
  *                         newStoreCount: { type: integer, description: 'Number of distinct Store IDs with no matching existing store — auto-created on commit, not treated as errors.' }
  *                         rows:
  *                           type: array
@@ -67,7 +78,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                               - type: object
  *                                 properties:
  *                                   rowNumber: { type: integer }
- *                                   status: { type: string, enum: [valid, invalid, duplicate] }
+ *                                   status: { type: string, enum: [new, update, invalid, duplicate_in_file] }
  *                                   errors: { type: array, items: { type: string } }
  *                                   storeId: { type: string, nullable: true, example: '1001', description: 'The canonical Store ID — this IS store.id (same value as reportStoreId, as a string), not a UUID.' }
  *                                   willCreateStore: { type: boolean }
@@ -76,13 +87,15 @@ const upload = multer({ storage: multer.memoryStorage() });
  *               message: Preview generated
  *               data:
  *                 totalRows: 2
+ *                 newRows: 1
+ *                 updateRows: 1
  *                 validRows: 2
  *                 invalidRows: 0
- *                 duplicateRows: 0
+ *                 duplicateInFileRows: 0
  *                 newStoreCount: 0
  *                 rows:
  *                   - rowNumber: 4
- *                     status: valid
+ *                     status: update
  *                     errors: []
  *                     willCreateStore: false
  *                     reportStoreId: 1001
@@ -93,7 +106,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                     hour: 1
  *                     grossSale: 1150
  *                   - rowNumber: 5
- *                     status: valid
+ *                     status: new
  *                     errors: []
  *                     willCreateStore: false
  *                     reportStoreId: 1001
@@ -119,14 +132,20 @@ const upload = multer({ storage: multer.memoryStorage() });
  *   post:
  *     summary: Bulk import a Sales by Hour Excel file
  *     description: >
- *       Only rows that pass validation and aren't duplicates are inserted
- *       into sales_by_hour; the response reports what happened to every row.
- *       Store IDs with no matching existing store are auto-created — the
- *       Excel Store ID becomes store.id directly (one store per distinct
- *       Store ID, even if it appears on many rows) before the sales-by-hour
- *       rows are inserted — see `storesCreated` in the response. Duplicate
- *       detection is by (store, month, hour) — importing the same file for
- *       the same month twice will not double-insert.
+ *       Every row that passes validation is written via an atomic upsert on
+ *       the (store_id, report_month, hour) unique constraint: a key not
+ *       already in sales_by_hour is inserted, a key that already exists is
+ *       overwritten in place with this file's data (the newly uploaded file
+ *       is the source of truth — this is never rejected as a duplicate, and
+ *       never raises a unique-violation). A (store_id, report_month, hour)
+ *       repeated more than once within this same file is resolved
+ *       deterministically before writing — the last occurrence in the file
+ *       wins; earlier ones are skipped (see `skippedDuplicatesInFile`). Only
+ *       rows that fail validation are excluded (see `failed`). Store IDs
+ *       with no matching existing store are auto-created — the Excel Store
+ *       ID becomes store.id directly (one store per distinct Store ID, even
+ *       if it appears on many rows) before the sales-by-hour rows are
+ *       written — see `storesCreated` in the response.
  *     tags: [Sales By Hour]
  *     requestBody:
  *       required: true
@@ -156,8 +175,10 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                       type: object
  *                       properties:
  *                         total: { type: integer }
- *                         imported: { type: integer }
- *                         skippedDuplicates: { type: integer }
+ *                         imported: { type: integer, description: 'Rows written this commit, insert + update combined.' }
+ *                         inserted: { type: integer, description: '(store_id, report_month, hour) not previously in sales_by_hour.' }
+ *                         updated: { type: integer, description: '(store_id, report_month, hour) already existed and was overwritten with this file''s data.' }
+ *                         skippedDuplicatesInFile: { type: integer, description: 'Rows sharing a (store_id, report_month, hour) with a later row in this same file — not written, the later row was used instead.' }
  *                         storesCreated:
  *                           type: array
  *                           items:
@@ -180,7 +201,9 @@ const upload = multer({ storage: multer.memoryStorage() });
  *               data:
  *                 total: 24
  *                 imported: 23
- *                 skippedDuplicates: 0
+ *                 inserted: 20
+ *                 updated: 3
+ *                 skippedDuplicatesInFile: 0
  *                 storesCreated:
  *                   - id: '1001'
  *                     storeId: '1001'

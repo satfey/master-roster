@@ -310,7 +310,7 @@ describe('storeMasterImportService — duplicate Store IDs within one file', () 
     expect(result.created).toBe(1);
   });
 
-  test('14. conflicting duplicate Store IDs (different Branch) are marked invalid, not silently resolved', async () => {
+  test('14. conflicting duplicate Store IDs tied on the SAME Effective Date are marked invalid — recency can\'t resolve a tie', async () => {
     createFakeStoreTable([]);
     createFakeAreaCoachTable([]);
     const buffer = await buildWorkbook([
@@ -327,6 +327,69 @@ describe('storeMasterImportService — duplicate Store IDs within one file', () 
     const result = await commitStoreMasterImport(buffer);
     expect(result.created).toBe(0);
     expect(result.failed).toHaveLength(2);
+  });
+
+  // Business rule confirmed directly: a Store ID repeated with conflicting Branch/Area Coach is
+  // resolved by Effective Date — the row for the more recent month is the current truth (e.g.
+  // Store 1370's Area Coach reassignment to Jirasak Bunchui only appears on its newer-month row).
+  test('a conflicting duplicate is resolved by Effective Date — the more recent month wins, no error', async () => {
+    createFakeStoreTable([]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([
+      ['2026-05-01', 1370, 'DQ1370-OLD BRANCH NAME', 'Somchai Old Coach'],
+      ['2026-07-01', 1370, 'DQ1370-CURRENT NAME', 'Jirasak Bunchui'], // the newer month — this one should win
+    ]);
+
+    const preview = await previewStoreMasterImport(buffer);
+
+    expect(preview.rows.every((r) => r.status === 'valid')).toBe(true);
+    expect(preview.invalidRows).toBe(0);
+    // the OLDER row is the one flagged as the superseded duplicate
+    expect(preview.rows[0].action).toBe('NO_CHANGE');
+    expect(preview.rows[1].action).toBe('CREATE');
+
+    const result = await commitStoreMasterImport(buffer);
+    expect(result.created).toBe(1);
+    expect(result.failed).toHaveLength(0);
+    const [newStores] = repo.createStores.mock.calls[0];
+    expect(newStores[0]).toMatchObject({ storeCode: '1370', name: 'DQ1370-CURRENT NAME' });
+    expect(result.areaCoachesCreated.map((c) => c.name)).toEqual(['Jirasak Bunchui']); // the older row's coach is never created
+  });
+
+  test('a conflicting duplicate where any row is missing an Effective Date still errors — recency can\'t be trusted without one', async () => {
+    createFakeStoreTable([]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([
+      ['2026-07-01', 1370, 'DQ1370-NEW NAME', 'Jirasak Bunchui'],
+      [null, 1370, 'DQ1370-OLD NAME', 'Somchai Old Coach'], // no Effective Date at all
+    ]);
+
+    const preview = await previewStoreMasterImport(buffer);
+
+    expect(preview.rows.every((r) => r.status === 'invalid')).toBe(true);
+    expect(preview.rows[0].errors.some((e) => e.includes('Conflicting duplicate Store ID'))).toBe(true);
+  });
+
+  test('3+ conflicting rows for the same Store ID all resolve against the single most recent Effective Date', async () => {
+    createFakeStoreTable([]);
+    createFakeAreaCoachTable([]);
+    const buffer = await buildWorkbook([
+      ['2026-03-01', 1370, 'DQ1370-MARCH', 'Coach March'],
+      ['2026-07-01', 1370, 'DQ1370-JULY', 'Jirasak Bunchui'], // the most recent — should win over both others
+      ['2026-05-01', 1370, 'DQ1370-MAY', 'Coach May'],
+    ]);
+
+    const preview = await previewStoreMasterImport(buffer);
+
+    expect(preview.invalidRows).toBe(0);
+    expect(preview.rows.find((r) => r.branch === 'DQ1370-JULY').action).toBe('CREATE');
+    expect(preview.rows.find((r) => r.branch === 'DQ1370-MARCH').action).toBe('NO_CHANGE');
+    expect(preview.rows.find((r) => r.branch === 'DQ1370-MAY').action).toBe('NO_CHANGE');
+
+    const result = await commitStoreMasterImport(buffer);
+    expect(result.created).toBe(1);
+    const [newStores] = repo.createStores.mock.calls[0];
+    expect(newStores[0].name).toBe('DQ1370-JULY');
   });
 });
 

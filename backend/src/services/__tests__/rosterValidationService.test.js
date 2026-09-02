@@ -1,3 +1,4 @@
+jest.mock('../../config/supabase', () => ({})); // laborBudgetService -> forecastService requires this directly at module load
 jest.mock('../../repositories/rosterRepository', () => ({
   findGuideline: jest.fn(),
   findActiveEmployees: jest.fn(),
@@ -68,6 +69,13 @@ function mockData({ guideline = null, shifts = [], grossBudgetRows = [], actualH
 
 beforeEach(() => {
   jest.clearAllMocks();
+  // validateRoster's monthly-capacity check now falls back to a sales-FORECASTED monthly
+  // guideline (via laborBudgetService/forecastService) whenever a store has no manually-
+  // entered monthly_labor_hours — exercised in laborBudgetService.test.js /
+  // forecastService.hourly.test.js, not here. Empty history keeps that fallback a no-op
+  // (forecastedSales 0 -> no tier match -> guideline stays null) unless a test explicitly
+  // configures findDailySalesHistory itself.
+  forecastRepo.findDailySalesHistory.mockResolvedValue([]);
 });
 
 describe('rosterValidationService.validateRoster', () => {
@@ -429,17 +437,17 @@ describe('rosterValidationService.validateRoster — Full-time working hours, br
     expect(result.status).toBe('FAILED');
   });
 
-  test('a Part-time shift outside the 4-6 hour range is flagged (ptHoursViolations)', async () => {
+  test('a Part-time shift outside the 4-8 hour range is flagged (ptHoursViolations)', async () => {
     mockData({
       guideline: { target_productivity: 500, min_staff_per_shift: 1 },
-      shifts: [makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '17:00', hours: 8, employee: makeEmployee('E1', { position_time_type: 'Part time' }) })],
+      shifts: [makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '18:00', hours: 9, employee: makeEmployee('E1', { position_time_type: 'Part time' }) })],
     });
     forecastRepo.findForecastRows.mockResolvedValue([forecastRow('2026-08-24', 9, 500)]);
 
     const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
     expect(result.ptHoursViolations).toHaveLength(1);
-    expect(result.ptHoursViolations[0]).toMatchObject({ employeeId: 'E1', plannedHours: 8 });
+    expect(result.ptHoursViolations[0]).toMatchObject({ employeeId: 'E1', plannedHours: 9 });
     expect(result.status).toBe('FAILED');
   });
 

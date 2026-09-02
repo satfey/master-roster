@@ -58,20 +58,33 @@ async function evaluateRows(buffer, reportMonth, createMissingStores) {
   const storeIds = [...new Set([...storeMap.values()].map((s) => s.id))];
   const existingKeys = await repo.findExistingRecordKeys(storeIds, reportMonth);
 
-  const seenInFile = new Set();
+  // A (store, month, hour) key can legitimately appear more than once in one
+  // file — only one write per key can happen. The LAST occurrence in file
+  // order wins, since the newly uploaded file is the source of truth (same
+  // convention as Sales Report Import). This pass just records which
+  // rowNumber wins for each key; earlier occurrences are marked
+  // 'duplicate_in_file' below and never written.
+  const winningRowNumberByKey = new Map();
+  for (const row of rows) {
+    if (row.errors.length || row.storeId === null) continue;
+    const store = storeMap.get(row.storeId);
+    if (!store) continue;
+    winningRowNumberByKey.set(repo.recordKey(store.id, reportMonth, row.hour), row.rowNumber);
+  }
 
-  const previewRows = rows.map((row) => {
+  const resultRows = rows.map((row) => {
     const errors = [...row.errors];
     const store = row.storeId !== null ? storeMap.get(row.storeId) : null;
 
     let status = 'invalid';
     if (errors.length === 0 && store) {
       const key = repo.recordKey(store.id, reportMonth, row.hour);
-      if (existingKeys.has(key) || seenInFile.has(key)) {
-        status = 'duplicate';
+      if (winningRowNumberByKey.get(key) !== row.rowNumber) {
+        status = 'duplicate_in_file';
       } else {
-        status = 'valid';
-        seenInFile.add(key);
+        // An (store, month, hour) already in the DB is UPDATEd with this file's data —
+        // never rejected as a duplicate — so re-importing a corrected report overwrites cleanly.
+        status = existingKeys.has(key) ? 'update' : 'new';
       }
     }
 
@@ -90,15 +103,19 @@ async function evaluateRows(buffer, reportMonth, createMissingStores) {
     };
   });
 
-  return { rows: previewRows, createdStores };
+  return { rows: resultRows, createdStores };
 }
 
 function summarize({ rows, createdStores }) {
+  const newRows = rows.filter((r) => r.status === 'new').length;
+  const updateRows = rows.filter((r) => r.status === 'update').length;
   return {
     totalRows: rows.length,
-    validRows: rows.filter((r) => r.status === 'valid').length,
+    newRows, // will be INSERTed
+    updateRows, // (store_id, report_month, hour) already exists — will be UPDATEd with this file's data
+    validRows: newRows + updateRows, // total rows that will actually be written, insert + update combined
     invalidRows: rows.filter((r) => r.status === 'invalid').length,
-    duplicateRows: rows.filter((r) => r.status === 'duplicate').length,
+    duplicateInFileRows: rows.filter((r) => r.status === 'duplicate_in_file').length, // same key repeated within this file — only the last occurrence is written
     newStoreCount: new Set(rows.filter((r) => r.willCreateStore).map((r) => r.reportStoreId)).size,
     rows,
   };
@@ -110,10 +127,14 @@ async function previewSalesByHourImport(buffer, reportMonth) {
 
 async function commitSalesByHourImport(buffer, reportMonth, userId) {
   const { rows, createdStores } = await evaluateRows(buffer, reportMonth, true);
-  const validRows = rows.filter((r) => r.status === 'valid');
+  // 'new' and 'update' are both written — the upsert below decides INSERT vs
+  // UPDATE per row via ON CONFLICT. 'duplicate_in_file' rows are never
+  // written: a duplicate key within this same file was already resolved
+  // down to a single winning row during evaluateRows.
+  const writableRows = rows.filter((r) => r.status === 'new' || r.status === 'update');
 
   const sourceType = await repo.getSalesByHourSourceType();
-  const records = validRows.map((r) => ({
+  const records = writableRows.map((r) => ({
     store_id: r.storeId,
     report_store_id: r.reportStoreId,
     brand_name: r.brandName,
@@ -125,12 +146,14 @@ async function commitSalesByHourImport(buffer, reportMonth, userId) {
     entered_by: userId,
   }));
 
-  const imported = await repo.insertRecords(records);
+  const imported = await repo.upsertRecords(records);
 
   return {
     total: rows.length,
-    imported,
-    skippedDuplicates: rows.filter((r) => r.status === 'duplicate').length,
+    imported, // total rows written this commit, insert + update combined
+    inserted: writableRows.filter((r) => r.status === 'new').length,
+    updated: writableRows.filter((r) => r.status === 'update').length,
+    skippedDuplicatesInFile: rows.filter((r) => r.status === 'duplicate_in_file').length,
     failed: rows.filter((r) => r.status === 'invalid').map((r) => ({ rowNumber: r.rowNumber, reportStoreId: r.reportStoreId, errors: r.errors })),
     storesCreated: createdStores.map((s) => ({ id: s.id, storeId: s.id, storeCode: s.storeCode, name: s.name })),
   };

@@ -4,6 +4,15 @@ const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
 /**
+ * NOTE: GET /dashboard and GET /dashboard/store/:id are intentionally
+ * undocumented here — no frontend caller, no internal caller, and they
+ * compute productivity from the legacy sales_record table (a separate,
+ * older calculation than what rosterValidationService now does properly
+ * from sales_report/hourly forecast/actual hours). The routes still exist
+ * and work (see dashboardController.js) — only removed from Swagger.
+ */
+
+/*
  * @swagger
  * /dashboard:
  *   get:

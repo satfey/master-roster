@@ -17,7 +17,7 @@ function recordKey(storeId, month, hour) {
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
   console.log('[sales-by-hour] lookup:', { table: 'store', column: 'id', filterCount: codes.length, batchSize: DEFAULT_BATCH_SIZE });
-  const stores = await runInBatches(codes, (batch) => supabase.from('store').select('*').in('id', batch));
+  const stores = await runInBatches(codes, (batch, { from, to }) => supabase.from('store').select('*').in('id', batch).range(from, to));
   return new Map(stores.map((s) => [s.id, s]));
 }
 
@@ -61,18 +61,30 @@ async function findExistingRecordKeys(storeIds, reportMonth) {
   if (!storeIds.length) return new Set();
 
   console.log('[sales-by-hour] lookup:', { table: 'sales_by_hour', column: 'store_id', filterCount: storeIds.length, batchSize: DEFAULT_BATCH_SIZE });
-  const existing = await runInBatches(storeIds, (batch) =>
-    supabase.from('sales_by_hour').select('store_id, report_month, hour').in('store_id', batch).eq('report_month', reportMonth),
+  const existing = await runInBatches(storeIds, (batch, { from, to }) =>
+    supabase.from('sales_by_hour').select('store_id, report_month, hour').in('store_id', batch).eq('report_month', reportMonth).range(from, to),
   );
 
   return new Set(existing.map((r) => recordKey(r.store_id, r.report_month, r.hour)));
 }
 
-async function insertRecords(records) {
+/**
+ * Writes sales_by_hour rows as an atomic upsert on the (store_id,
+ * report_month, hour) unique constraint — a key not yet in the table is
+ * inserted, a key that already exists is overwritten in place (the newly
+ * uploaded file is the source of truth, same convention as Sales Report
+ * Import). `id` and `created_at` are deliberately absent from every record
+ * so the DB default applies on insert and the existing row's original
+ * values are left untouched on update.
+ */
+async function upsertRecords(records) {
   if (!records.length) return 0;
-  const { data, error } = await supabase.from('sales_by_hour').insert(records).select();
+  const { data, error } = await supabase
+    .from('sales_by_hour')
+    .upsert(records, { onConflict: 'store_id,report_month,hour' })
+    .select();
   if (error) throw error;
   return data.length;
 }
 
-module.exports = { findStoresByCodes, createStores, getSalesByHourSourceType, findExistingRecordKeys, insertRecords, recordKey };
+module.exports = { findStoresByCodes, createStores, getSalesByHourSourceType, findExistingRecordKeys, upsertRecords, recordKey };

@@ -16,7 +16,7 @@ function recordKey(storeId, date) {
  */
 async function findStoresByCodes(codes) {
   if (!codes.length) return new Map();
-  const stores = await runInBatches(codes, (batch) => supabase.from('store').select('*').in('id', batch));
+  const stores = await runInBatches(codes, (batch, { from, to }) => supabase.from('store').select('*').in('id', batch).range(from, to));
   return new Map(stores.map((s) => [s.id, s]));
 }
 
@@ -60,13 +60,14 @@ async function findExistingReportKeys(storeIds, dates) {
   const fromDate = new Date(Math.min(...timestamps)).toISOString().slice(0, 10);
   const toDate = new Date(Math.max(...timestamps)).toISOString().slice(0, 10);
 
-  const existing = await runInBatches(storeIds, (batch) =>
+  const existing = await runInBatches(storeIds, (batch, { from: rangeFrom, to: rangeTo }) =>
     supabase
       .from('sales_report')
       .select('store_id, report_date')
       .in('store_id', batch)
       .gte('report_date', fromDate)
-      .lte('report_date', toDate),
+      .lte('report_date', toDate)
+      .range(rangeFrom, rangeTo),
   );
 
   return new Set(existing.map((r) => recordKey(r.store_id, r.report_date)));

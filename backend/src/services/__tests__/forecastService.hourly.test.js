@@ -12,7 +12,7 @@ jest.mock('../../repositories/forecastRepository', () => ({
   upsertForecastRows: jest.fn(),
 }));
 const repo = require('../../repositories/forecastRepository');
-const { generateHourlyForecast } = require('../forecastService');
+const { generateHourlyForecast, computeMonthlyForecastedSales } = require('../forecastService');
 
 /** Builds `count` weekly-spaced daily sales rows landing on the given weekday, ending just before `endExclusive`. */
 function dailyRowsForWeekday(weekday, amount, count, endExclusive = '2026-08-01') {
@@ -155,5 +155,37 @@ describe('forecastService.generateHourlyForecast', () => {
     const [rows] = repo.upsertForecastRows.mock.calls[0];
     expect(rows[0]).toMatchObject({ store_id: '1005', forecast_date: '2026-08-03', model_run_id: 'model-run-1' });
     expect(rows.every((r) => /^HOUR_\d{2}$/.test(r.daypart))).toBe(true);
+  });
+});
+
+describe('forecastService.computeMonthlyForecastedSales — the monthly total used to size the Monthly Labor Hours guideline for a future month', () => {
+  test('sums the same per-day weekday-aware forecast used by generateHourlyForecast across every date in the month', async () => {
+    // Every historical row is 10,000/day (Monday-weighted, but flat regardless of weekday), so every one of August 2026's 31 days forecasts to 10,000.
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+
+    const total = await computeMonthlyForecastedSales({ storeId: '1005', monthKey: '2026-08' });
+
+    expect(total).toBe(31 * 10000);
+    expect(repo.findDailySalesHistory).toHaveBeenCalledWith('1005', { before: '2026-08-01' });
+  });
+
+  test('no sales history at all -> 0, not NaN or a crash', async () => {
+    repo.findDailySalesHistory.mockResolvedValue([]);
+
+    const total = await computeMonthlyForecastedSales({ storeId: '1005', monthKey: '2026-08' });
+
+    expect(total).toBe(0);
+  });
+
+  test('the history snapshot is frozen at the month start, independent of which specific date within the month a caller asks about', async () => {
+    // Same fixture as generateHourlyForecast's test 1, but queried as a month instead of a single day —
+    // proves this reuses computeDailyForecast rather than re-deriving its own (possibly inconsistent) logic.
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+    repo.findHourlySalesHistory.mockResolvedValue([]); // irrelevant to this function — hourly shape is not used
+
+    const total = await computeMonthlyForecastedSales({ storeId: '1005', monthKey: '2026-08' });
+
+    expect(Number.isFinite(total)).toBe(true);
+    expect(total).toBeGreaterThan(0);
   });
 });

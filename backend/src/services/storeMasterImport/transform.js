@@ -33,7 +33,7 @@ function transformRow(raw) {
     branch,
     areaCoachName,
     areaCoachNameNormalized,
-    effectiveDate: parseDate(raw.effectiveDate), // informational only — never persisted, never blocks validation
+    effectiveDate: parseDate(raw.effectiveDate), // never persisted directly, but used to resolve a same-Store-ID Branch/Area Coach conflict within the file — see pickMostRecentRow in the service
     effectiveDateRaw: raw.effectiveDate,
     errors,
   };

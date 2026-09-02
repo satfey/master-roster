@@ -1,7 +1,7 @@
 const supabase = require('../config/supabase');
 const forecastRepo = require('../repositories/forecastRepository');
 const { operatingHourList, hourDaypart } = require('./storeOperatingHours');
-const { weekdayOf, eachDateInRange } = require('../utils/dateRange');
+const { weekdayOf, eachDateInRange, monthRange } = require('../utils/dateRange');
 
 function simpleMovingAverage(history, windowSize = 7) {
   if (history.length === 0) return 0;
@@ -222,6 +222,26 @@ async function generateHourlyForecast({ storeId, startDate, endDate }) {
   };
 }
 
+/**
+ * A store's total FORECASTED sales for one calendar month — the same
+ * weekday-aware per-day forecast used by generateHourlyForecast (see
+ * computeDailyForecast above), summed across every date in the month,
+ * against one frozen history snapshot (as-of the month's start, so the
+ * result doesn't shift depending on which sub-range of the month a caller
+ * happens to be generating). Used to size the Monthly Labor Hours guideline
+ * (see laborBudgetService.resolveMonthlyLaborHoursGuideline) for a month
+ * that hasn't happened yet — unlike labor_guideline reporting, which sums
+ * real sales_report.gross_actual for a month already in progress or past,
+ * roster generation always targets future dates, so there's no actual
+ * monthly total to sum yet.
+ */
+async function computeMonthlyForecastedSales({ storeId, monthKey }) {
+  const { start, end } = monthRange(monthKey);
+  const dailyHistory = await forecastRepo.findDailySalesHistory(storeId, { before: start });
+  const total = eachDateInRange(start, end).reduce((sum, date) => sum + computeDailyForecast(dailyHistory, date).value, 0);
+  return Math.round(total);
+}
+
 module.exports = {
   generateForecast,
   simpleMovingAverage,
@@ -229,4 +249,5 @@ module.exports = {
   generateHourlyForecast,
   computeDailyForecast,
   computeHourShape,
+  computeMonthlyForecastedSales,
 };

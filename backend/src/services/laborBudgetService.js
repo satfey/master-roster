@@ -1,5 +1,6 @@
 const laborBudgetRepo = require('../repositories/laborBudgetRepository');
-const { weekdayOf } = require('../utils/dateRange');
+const { weekdayOf, monthRange } = require('../utils/dateRange');
+const { computeMonthlyForecastedSales } = require('./forecastService');
 
 /**
  * Weekend = Saturday/Sunday (ISO weekday 6/0) — not explicitly specified
@@ -100,4 +101,100 @@ function computeLaborCostBudget({ salesLevel, guideline }) {
   return Math.round(salesLevel * (targetColPercent / 100) * 100) / 100;
 }
 
-module.exports = { resolveSalesLevel, matchTier, computeDailyLaborHoursBudget, computeLaborCostBudget, isWeekendDate };
+/**
+ * Monthly Sales/Budget -> Monthly Labor Hours guideline (the given business
+ * table, exactly 30x each bracket's daily "Standard Working Hours" figure).
+ * A planning/budget CEILING, never a fill target — see getMonthlyLaborGuideline.
+ */
+const MONTHLY_LABOR_GUIDELINE_TIERS = [
+  { min: 0, max: 250000, hours: 840 },
+  { min: 250001, max: 330000, hours: 780 },
+  { min: 330001, max: 410000, hours: 810 },
+  { min: 410001, max: 500000, hours: 840 },
+  { min: 500001, max: 540000, hours: 990 },
+  { min: 540001, max: 620000, hours: 1020 },
+  { min: 620001, max: 660000, hours: 1050 },
+  { min: 660001, max: 700000, hours: 1080 },
+  { min: 700001, max: 780000, hours: 1140 },
+  { min: 780001, max: 870000, hours: 1290 },
+  { min: 870001, max: 950000, hours: 1290 },
+  { min: 950001, max: 1500000, hours: 1290 },
+];
+
+/**
+ * Maps a store's monthly sales figure to its Monthly Labor Hours guideline
+ * bracket — a planning CEILING for the month, never a number the roster
+ * generator tries to fill. rosterGenerationService never imports this
+ * function (or computeMonthlySalesSummary/resolveMonthlyLaborHoursGuideline)
+ * directly — it only ever sees the single resolved hours number, via
+ * monthlyCapacityService.computeMonthlyCapacity, applied exactly the same
+ * way the pre-existing manually-entered labor_guideline.monthly_labor_hours
+ * already was: a hard cap on discretionary (productivity-justified) extra
+ * staffing, never a target that coverage/opening/closing get padded toward.
+ *
+ * `monthlySales` above 1,500,000 (the table's own top bound) has no given
+ * rule — this is reported as out-of-range (`withinRange: false, hours:
+ * null`), never guessed at by extrapolating the table.
+ */
+function getMonthlyLaborGuideline(monthlySales) {
+  if (monthlySales == null || monthlySales < 0) return { hours: null, withinRange: false };
+  const tier = MONTHLY_LABOR_GUIDELINE_TIERS.find((t) => monthlySales >= t.min && monthlySales <= t.max);
+  if (!tier) return { hours: null, withinRange: false }; // > 1,500,000 — outside the given table
+  return { hours: tier.hours, withinRange: true };
+}
+
+/**
+ * The Monthly Labor Hours figure monthlyCapacityService actually applies as
+ * roster generation's outer monthly cap:
+ *   1. The store's own manually-entered labor_guideline.monthly_labor_hours,
+ *      when set — an explicit human override always wins.
+ *   2. Otherwise, the Monthly Sales -> Monthly Labor Hours table above,
+ *      keyed to this month's FORECASTED sales (computeMonthlyForecastedSales)
+ *      — generation always targets dates that haven't happened yet, so
+ *      there's no actual monthly sales total to sum the way
+ *      computeMonthlySalesSummary does for reporting on a month already
+ *      under way.
+ * Still just a ceiling either way (see getMonthlyLaborGuideline) — this
+ * function only decides WHICH number feeds that ceiling, never how it's
+ * enforced.
+ */
+async function resolveMonthlyLaborHoursGuideline({ storeId, monthKey, manualMonthlyLaborHours }) {
+  if (manualMonthlyLaborHours != null) {
+    return { hours: Number(manualMonthlyLaborHours), source: 'MANUAL', monthlySales: null, guidelineWithinRange: null };
+  }
+  const monthlySales = await computeMonthlyForecastedSales({ storeId, monthKey });
+  const guideline = getMonthlyLaborGuideline(monthlySales);
+  return { hours: guideline.hours, source: 'SALES_FORECAST', monthlySales, guidelineWithinRange: guideline.withinRange };
+}
+
+/**
+ * A store's total sales for one month (SUM(sales_report.gross_actual),
+ * grouped by store_id + the given month), mapped through the Monthly Labor
+ * Hours guideline table above. Reuses findGrossBudgetRange as-is (same
+ * table, same date-range query, gross_actual is just one more column on
+ * the existing select) — no duplicate sales query.
+ */
+async function computeMonthlySalesSummary({ storeId, monthKey }) {
+  const { start, end } = monthRange(monthKey);
+  const rows = await laborBudgetRepo.findGrossBudgetRange(storeId, start, end);
+  const monthlySales = rows.reduce((sum, r) => sum + (r.gross_actual != null ? Number(r.gross_actual) : 0), 0);
+  const guideline = getMonthlyLaborGuideline(monthlySales);
+  return {
+    storeId,
+    monthKey,
+    monthlySales: Math.round(monthlySales * 100) / 100,
+    monthlyGuidelineHours: guideline.hours,
+    guidelineWithinRange: guideline.withinRange,
+  };
+}
+
+module.exports = {
+  resolveSalesLevel,
+  matchTier,
+  computeDailyLaborHoursBudget,
+  computeLaborCostBudget,
+  isWeekendDate,
+  getMonthlyLaborGuideline,
+  computeMonthlySalesSummary,
+  resolveMonthlyLaborHoursGuideline,
+};

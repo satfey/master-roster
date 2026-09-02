@@ -15,8 +15,4 @@ router.use('/labor', require('./laborRoutes'));
 router.use('/', require('./importRoutes')); // /employee/import, /store/import, /import
 router.use('/user', require('./userRoutes'));
 
-const calculateRoute = require("./calculate");
-
-router.use(calculateRoute);
-
 module.exports = router;

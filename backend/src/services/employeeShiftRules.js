@@ -17,7 +17,9 @@
  * span); FULL_TIME_CLOCK_SPAN_HOURS positions a shift within the day
  * (start_time -> end_time) only.
  *
- * Part-time: 4-6 hours, never shorter or longer, no mandatory break modeled.
+ * Part-time: 4-8 hours, never shorter or longer, no mandatory break modeled.
+ * 8h is a hard ceiling — the system never schedules a Part-time shift beyond
+ * it, so overtime is avoided by construction rather than tracked separately.
  *
  * FULL_TIME_MAX_CONSECUTIVE_DAYS is the Thailand labor-law baseline: a
  * Full-time employee must get a rest day at least every 6 consecutive
@@ -30,7 +32,7 @@ const FULL_TIME_BREAK_HOURS = 1;
 const FULL_TIME_CLOCK_SPAN_HOURS = FULL_TIME_SHIFT_HOURS + FULL_TIME_BREAK_HOURS; // 9 — start_time to end_time
 const FULL_TIME_MAX_CONSECUTIVE_DAYS = 6;
 const PART_TIME_MIN_HOURS = 4;
-const PART_TIME_MAX_HOURS = 6;
+const PART_TIME_MAX_HOURS = 8;
 const DEFAULT_WEEKLY_HOURS = 48; // fallback when employee.default_weekly_hours is null, matching the legacy rosterService MAX_WEEKLY_HOURS
 
 function weeklyCapFor(employee) {

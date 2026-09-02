@@ -1,6 +1,7 @@
 const { generateDraftRoster } = require('../services/rosterGenerationService');
 const { validateRoster } = require('../services/rosterValidationService');
 const { computeMonthlyCapacity } = require('../services/monthlyCapacityService');
+const { computeMonthlySalesSummary } = require('../services/laborBudgetService');
 const laborBudgetRepo = require('../repositories/laborBudgetRepository');
 const supabase = require('../config/supabase');
 const { success, failure } = require('../utils/apiResponse');
@@ -63,8 +64,18 @@ async function capacity(req, res) {
   if (!storeId) return failure(res, 'storeId is required', 400);
   if (!month) return failure(res, 'month is required (YYYY-MM)', 400);
 
-  const result = await computeMonthlyCapacity({ storeId, monthKey: month });
-  return success(res, result);
+  // capacityResult.monthlyGuideline is the number actually enforced as a ceiling by roster generation —
+  // the store's manually-entered monthly_labor_hours when set, otherwise this month's FORECASTED sales
+  // mapped through the Monthly Labor Hours table (see laborBudgetService.resolveMonthlyLaborHoursGuideline).
+  // salesSummary.monthlyGuidelineHours is a separate reporting figure: the same table, but keyed to this
+  // month's ACTUAL sales-to-date (sales_report.gross_actual) — useful to compare "what generation planned
+  // against" vs. "what the guideline would be given how the month has actually gone so far". Distinct
+  // fields on purpose; never merged into one number.
+  const [capacityResult, salesSummary] = await Promise.all([
+    computeMonthlyCapacity({ storeId, monthKey: month }),
+    computeMonthlySalesSummary({ storeId, monthKey: month }),
+  ]);
+  return success(res, { ...capacityResult, ...salesSummary });
 }
 
 async function list(req, res) {

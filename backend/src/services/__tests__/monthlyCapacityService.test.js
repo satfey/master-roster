@@ -20,8 +20,18 @@ jest.mock('../../repositories/laborBudgetRepository', () => ({
   upsertStoreActualHours: jest.fn(),
   findStoreActualHours: jest.fn(),
 }));
+// Isolated from resolveMonthlyLaborHoursGuideline's own manual-vs-sales-forecast
+// resolution logic (covered separately in laborBudgetService.test.js) — this
+// file only cares that computeMonthlyCapacity applies WHATEVER hours number
+// comes back as a ceiling. The default mock below just echoes the manual
+// value straight through, so every pre-existing test below (all of which
+// pass guideline.monthly_labor_hours) behaves exactly as before.
+jest.mock('../laborBudgetService', () => ({
+  resolveMonthlyLaborHoursGuideline: jest.fn(),
+}));
 const rosterRepo = require('../../repositories/rosterRepository');
 const laborBudgetRepo = require('../../repositories/laborBudgetRepository');
+const laborBudgetService = require('../laborBudgetService');
 const { computeMonthlyCapacity } = require('../monthlyCapacityService');
 
 function shift({ date, hours }) {
@@ -33,6 +43,12 @@ function actual({ date, hours }) {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  laborBudgetService.resolveMonthlyLaborHoursGuideline.mockImplementation(async ({ manualMonthlyLaborHours }) => ({
+    hours: manualMonthlyLaborHours != null ? Number(manualMonthlyLaborHours) : null,
+    source: manualMonthlyLaborHours != null ? 'MANUAL' : 'SALES_FORECAST',
+    monthlySales: null,
+    guidelineWithinRange: null,
+  }));
 });
 
 describe('monthlyCapacityService.computeMonthlyCapacity', () => {
@@ -116,5 +132,29 @@ describe('monthlyCapacityService.computeMonthlyCapacity', () => {
 
     expect(result.monthlyGuideline).toBeNull();
     expect(result.remainingHours).toBeNull();
+  });
+
+  test('no manual monthly_labor_hours configured -> falls back to the Sales -> Labor Hours-derived guideline, still applied as a ceiling', async () => {
+    rosterRepo.findShiftsForStoreInRange.mockResolvedValue([shift({ date: '2026-08-03', hours: 40 })]);
+    laborBudgetRepo.findStoreActualHours.mockResolvedValue([]);
+    laborBudgetService.resolveMonthlyLaborHoursGuideline.mockResolvedValue({ hours: 840, source: 'SALES_FORECAST', monthlySales: 200000, guidelineWithinRange: true });
+
+    const result = await computeMonthlyCapacity({ storeId: '1005', monthKey: '2026-08', guideline: { target_productivity: 500 } });
+
+    expect(laborBudgetService.resolveMonthlyLaborHoursGuideline).toHaveBeenCalledWith({ storeId: '1005', monthKey: '2026-08', manualMonthlyLaborHours: null });
+    expect(result.monthlyGuideline).toBe(840);
+    expect(result.monthlyGuidelineSource).toBe('SALES_FORECAST');
+    expect(result.remainingHours).toBe(800); // 840 - 40 already planned
+  });
+
+  test('a manually-entered monthly_labor_hours is passed through as the ceiling, and the sales-derived value never overrides it', async () => {
+    rosterRepo.findShiftsForStoreInRange.mockResolvedValue([]);
+    laborBudgetRepo.findStoreActualHours.mockResolvedValue([]);
+
+    const result = await computeMonthlyCapacity({ storeId: '1005', monthKey: '2026-08', guideline: { monthly_labor_hours: 1000 } });
+
+    expect(laborBudgetService.resolveMonthlyLaborHoursGuideline).toHaveBeenCalledWith({ storeId: '1005', monthKey: '2026-08', manualMonthlyLaborHours: 1000 });
+    expect(result.monthlyGuideline).toBe(1000);
+    expect(result.monthlyGuidelineSource).toBe('MANUAL');
   });
 });
