@@ -12,6 +12,7 @@ jest.mock('../../repositories/laborBudgetRepository', () => ({
 jest.mock('../forecastService', () => ({
   computeMonthlyForecastedSales: jest.fn(),
 }));
+jest.mock('../../config/supabase', () => ({}));
 const laborBudgetRepo = require('../../repositories/laborBudgetRepository');
 const forecastService = require('../forecastService');
 const {

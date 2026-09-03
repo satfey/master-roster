@@ -13,6 +13,8 @@ const {
   FULL_TIME_MAX_CONSECUTIVE_DAYS,
   PART_TIME_MIN_HOURS,
   PART_TIME_MAX_HOURS,
+  PART_TIME_BREAK_THRESHOLD_HOURS,
+  PART_TIME_BREAK_HOURS,
 } = require('./employeeShiftRules');
 
 const OVERSTAFF_TOLERANCE = 1; // scheduled may exceed required by this many heads before it's flagged — required is already a rounded-up estimate, so a 1-person buffer avoids flagging every shift boundary as "overstaffed"
@@ -247,6 +249,7 @@ async function validateRoster({ storeId, startDate, endDate }) {
   const ftWorkingHoursViolations = [];
   const ftBreakViolations = [];
   const ptHoursViolations = [];
+  const ptBreakViolations = [];
   const shiftWindowViolations = [];
   const doubleBookingViolations = [];
   const shiftsByEmployeeDate = new Map(); // `${employeeId}|${date}` -> shift[]
@@ -277,8 +280,22 @@ async function validateRoster({ storeId, startDate, endDate }) {
       } else if (breakHours !== FULL_TIME_BREAK_HOURS) {
         ftBreakViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, reason: `break_hours = ${breakHours}, expected ${FULL_TIME_BREAK_HOURS}` });
       }
-    } else if (type === 'PART_TIME' && (plannedHours < PART_TIME_MIN_HOURS || plannedHours > PART_TIME_MAX_HOURS)) {
-      ptHoursViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, plannedHours });
+    } else if (type === 'PART_TIME') {
+      if (plannedHours < PART_TIME_MIN_HOURS || plannedHours > PART_TIME_MAX_HOURS) {
+        ptHoursViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, plannedHours });
+      }
+      // Labour Protection Act s.27: more than PART_TIME_BREAK_THRESHOLD_HOURS (5) consecutive
+      // working hours requires a rest break of at least PART_TIME_BREAK_HOURS (1h) — the
+      // trigger is continuous working time, not a shift-length bracket, so a PT shift of
+      // exactly 5h or less is never flagged here even without a break.
+      if (plannedHours > PART_TIME_BREAK_THRESHOLD_HOURS) {
+        const breakHours = s.break_start_time && s.break_end_time ? Number(s.break_end_time.slice(0, 2)) - Number(s.break_start_time.slice(0, 2)) : null;
+        if (breakHours == null) {
+          ptBreakViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, reason: `worked ${plannedHours}h continuously with no break — more than ${PART_TIME_BREAK_THRESHOLD_HOURS} consecutive hours requires at least a ${PART_TIME_BREAK_HOURS}-hour rest break (Labour Protection Act s.27)` });
+        } else if (breakHours < PART_TIME_BREAK_HOURS) {
+          ptBreakViolations.push({ shiftId: s.id, employeeId: s.employee_id, date: s.shift_date, reason: `break_hours = ${breakHours}, expected at least ${PART_TIME_BREAK_HOURS}` });
+        }
+      }
     }
 
     if (startHourOf(s) < OPERATING_HOURS.start || endHourOf(s) > OPERATING_HOURS.end) {
@@ -327,6 +344,7 @@ async function validateRoster({ storeId, startDate, endDate }) {
   if (ftWeeklyHourViolations.length) warnings.push(`${ftWeeklyHourViolations.length} Full-time employee(s) exceeded 48 working hours in a rolling 7-day window.`);
   if (consecutiveDayViolations.length) warnings.push(`${consecutiveDayViolations.length} Full-time employee(s) worked more than ${FULL_TIME_MAX_CONSECUTIVE_DAYS} consecutive days without a rest day.`);
   if (ptHoursViolations.length) warnings.push(`${ptHoursViolations.length} Part-time shift(s) fall outside the ${PART_TIME_MIN_HOURS}-${PART_TIME_MAX_HOURS} hour range.`);
+  if (ptBreakViolations.length) warnings.push(`${ptBreakViolations.length} Part-time shift(s) worked more than ${PART_TIME_BREAK_THRESHOLD_HOURS} consecutive hours without the required ${PART_TIME_BREAK_HOURS}-hour rest break.`);
   if (shiftWindowViolations.length) warnings.push(`${shiftWindowViolations.length} shift(s) fall outside the store's ${pad(OPERATING_HOURS.start)}:00-${pad(OPERATING_HOURS.end)}:00 operating window.`);
   if (doubleBookingViolations.length) warnings.push(`${doubleBookingViolations.length} employee-date pair(s) have more than one shift scheduled (double booking).`);
 
@@ -417,6 +435,7 @@ async function validateRoster({ storeId, startDate, endDate }) {
     ftWeeklyHourViolations.length > 0 ||
     consecutiveDayViolations.length > 0 ||
     ptHoursViolations.length > 0 ||
+    ptBreakViolations.length > 0 ||
     shiftWindowViolations.length > 0 ||
     doubleBookingViolations.length > 0;
 
@@ -442,6 +461,7 @@ async function validateRoster({ storeId, startDate, endDate }) {
     ftWeeklyHourViolations, // a Full-time employee over 48 working hours in some rolling 7-day window
     consecutiveDayViolations, // a Full-time employee worked more than 6 consecutive calendar days
     ptHoursViolations, // a Part-time shift outside the 4-8 hour range
+    ptBreakViolations, // a Part-time shift worked >5 consecutive hours without the required 1-hour break
     shiftWindowViolations, // a shift starting before 09:00 or ending after 22:00
     doubleBookingViolations, // an employee with more than one shift on the same date
     employeesOverLimit,

@@ -2,7 +2,7 @@ const rosterRepo = require('../repositories/rosterRepository');
 const { generateHourlyForecast, computeMonthlyForecastedSales } = require('./forecastService');
 const { computeLaborDemand } = require('./laborDemandService');
 const { monthlyCapFor, validateRoster } = require('./rosterValidationService');
-const { computeDailyLaborHoursBudget } = require('./laborBudgetService');
+const { computeDailyLaborHoursBudget, resolveTargetProductivity } = require('./laborBudgetService');
 const { computeMonthlyCapacity } = require('./monthlyCapacityService');
 const { OPERATING_HOURS, CLOSING_COVERAGE_STAFF_COUNT, operatingHourList } = require('./storeOperatingHours');
 const { eachDateInRange, isoWeekStart, monthKey, monthRange, toUTCDate } = require('../utils/dateRange');
@@ -13,7 +13,10 @@ const {
   FULL_TIME_MAX_CONSECUTIVE_DAYS,
   PART_TIME_MIN_HOURS,
   PART_TIME_MAX_HOURS,
+  PART_TIME_BREAK_THRESHOLD_HOURS,
+  PART_TIME_BREAK_HOURS,
   weeklyCapFor,
+  partTimeClockSpanHours,
   employeeShiftType,
 } = require('./employeeShiftRules');
 
@@ -43,6 +46,25 @@ function buildShiftRow({ employeeId, date, startHour, lengthHours, type }) {
     const breakStartHour = startHour + 4; // no more than 5 consecutive working hours before the break
     const breakEndHour = breakStartHour + FULL_TIME_BREAK_HOURS;
     const endHour = startHour + FULL_TIME_CLOCK_SPAN_HOURS;
+    return {
+      employee_id: employeeId,
+      shift_date: date,
+      start_time: `${pad(startHour)}:00`,
+      end_time: `${pad(endHour)}:00`,
+      break_start_time: `${pad(breakStartHour)}:00`,
+      break_end_time: `${pad(breakEndHour)}:00`,
+      planned_hours: lengthHours, // WORKING hours only — the break is unpaid, never counted as labor
+    };
+  }
+  // PART_TIME: no break unless working continuously for more than
+  // PART_TIME_BREAK_THRESHOLD_HOURS (5) — the Labour Protection Act trigger is
+  // consecutive working time, not a shift-length bracket, so an exactly-5h
+  // shift stays break-free while anything longer gets 1h placed after the
+  // first 5 worked hours (mirrors Full-time's break placement, one level up).
+  if (lengthHours > PART_TIME_BREAK_THRESHOLD_HOURS) {
+    const breakStartHour = startHour + PART_TIME_BREAK_THRESHOLD_HOURS;
+    const breakEndHour = breakStartHour + PART_TIME_BREAK_HOURS;
+    const endHour = breakEndHour + (lengthHours - PART_TIME_BREAK_THRESHOLD_HOURS);
     return {
       employee_id: employeeId,
       shift_date: date,
@@ -91,8 +113,24 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
   }
 
   const hourlyForecast = await generateHourlyForecast({ storeId, startDate, endDate });
-  const laborDemand = computeLaborDemand({ days: hourlyForecast.days, guideline });
+
+  // target_productivity drives laborDemandService's maxJustifiedHeadcount — the ceiling that
+  // lets a genuinely busy hour pull in extra staff. A manually-entered labor_guideline value
+  // always wins; otherwise fall back to this store's own most recent REAL reported
+  // productivity from WHR Target Import — its actual historical performance is a far better
+  // basis for "how many people does an hour of this store's sales justify" than the
+  // alternative (no guideline row at all, which every real store has today). Only overrides
+  // target_productivity specifically — every other guideline field (target_col_percent,
+  // min_staff_per_shift, monthly_labor_hours) is passed through untouched.
+  const manualTargetProductivity = guideline?.target_productivity != null ? Number(guideline.target_productivity) : null;
+  const productivityResult = await resolveTargetProductivity({ storeId, manualTargetProductivity });
+  const effectiveGuideline = productivityResult.value != null ? { ...(guideline || {}), target_productivity: productivityResult.value } : guideline;
+
+  const laborDemand = computeLaborDemand({ days: hourlyForecast.days, guideline: effectiveGuideline });
   const warnings = [...laborDemand.warnings];
+  if (productivityResult.source === 'WHR_TARGET_HISTORY') {
+    warnings.push(`No labor_guideline.target_productivity configured — using this store's most recent real WHR Target productivity (${productivityResult.value}, from ${productivityResult.reportMonth}) instead.`);
+  }
   const budgetShortfalls = []; // [{ date, requiredHours, allowedHours, shortageHours, reason }]
 
   const unknownTypeEmployees = employees.filter((e) => employeeShiftType(e) === null);
@@ -158,6 +196,49 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     monthlyForecastedSalesByMonth[mk] = await computeMonthlyForecastedSales({ storeId, monthKey: mk });
   }
 
+  // --- Full-time day-off staggering ---------------------------------------
+  // Every Full-time employee at a store that's structurally active every day
+  // (e.g. one opens, another closes) accumulates their 48h/week cap in
+  // lockstep — both reach it on the exact same date — so without an explicit
+  // assignment they'd all land their one weekly rest day on that same date
+  // (whichever falls 7th in the ISO week), leaving the store's busiest day
+  // (often a weekend) staffed by Part-time alone. Each Full-time employee
+  // instead gets a PREFERRED rest day per ISO week, staggered across the
+  // group and biased toward that week's lowest-demand day first (so the
+  // group's rest days land on quiet days before ever touching a busy one).
+  // This is a SOFT preference only — see pickEmployee below: if genuinely no
+  // one else is eligible that day, the preferred-off employee is still used
+  // rather than ever leaving coverage unfilled.
+  const ftEmployees = employees.filter((e) => employeeShiftType(e) === 'FULL_TIME');
+  const preferredDayOffByEmployee = new Map(); // employeeId -> Set of 'YYYY-MM-DD'
+  if (ftEmployees.length > 1) {
+    // Only meaningful with 2+ Full-time employees — with exactly one, there's no "everyone
+    // gets the same day off" collision to stagger away from, and biasing their sole rest day
+    // toward a specific low-demand weekday would just be an unrequested behavior change.
+    const demandByDate = new Map(laborDemand.days.map((d) => [d.date, d.hours.reduce((sum, h) => sum + h.forecastedSales, 0)]));
+    const datesByWeek = new Map();
+    for (const d of laborDemand.days) {
+      const wk = isoWeekStart(d.date);
+      if (!datesByWeek.has(wk)) datesByWeek.set(wk, []);
+      datesByWeek.get(wk).push(d.date);
+    }
+    for (const weekDates of datesByWeek.values()) {
+      // Only stagger when this ISO week is FULLY covered by the requested range (all 7 days
+      // present). 6 working days already exactly equals the 48h cap with zero days off needed —
+      // forcing a preferred rest day into a 6-day-or-shorter window would take away a real
+      // working day nobody was ever going to be forced to give up, for a collision that can't
+      // happen there in the first place (there's no visible 7th day to land everyone's day off
+      // on simultaneously).
+      if (weekDates.length < 7) continue;
+      const sortedByDemandAsc = [...weekDates].sort((a, b) => (demandByDate.get(a) || 0) - (demandByDate.get(b) || 0));
+      ftEmployees.forEach((emp, i) => {
+        const preferredDate = sortedByDemandAsc[i % sortedByDemandAsc.length];
+        if (!preferredDayOffByEmployee.has(emp.id)) preferredDayOffByEmployee.set(emp.id, new Set());
+        preferredDayOffByEmployee.get(emp.id).add(preferredDate);
+      });
+    }
+  }
+
   const assignedDay = {}; // `${employeeId}-${date}` -> true (one shift per employee per day)
   const shiftRows = []; // { employee_id, shift_date, start_time, end_time, planned_hours }
   const dailyLaborHoursBudget = [];
@@ -170,27 +251,25 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     const minRequiredByHour = new Map(dayDemand.hours.map((h) => [h.hour, h.requiredHeadcount]));
 
     const dailyForecastValue = dayDemand.hours.reduce((sum, h) => sum + h.forecastedSales, 0);
+    // The daily labor_hour_guideline_tier bracket table is no longer used to SIZE
+    // scheduling — most real stores have no tier configured at all, and even a matched one is
+    // a coarse, store-agnostic bracket compared to deriving today's share directly from this
+    // store's own real (forecasted) monthly sales. Still looked up and reported (below) purely
+    // for visibility when a store happens to have one configured — informational only now.
     const budget = await computeDailyLaborHoursBudget({ storeId, date, forecastValue: dailyForecastValue });
     if (budget.allowedLaborHours != null) dailyLaborHoursBudget.push({ date, ...budget });
 
-    // No daily tier matched -> derive this day's budget from the monthly guideline
-    // instead (this month's total hours x this day's share of the month's forecasted
-    // sales), so it still reflects real relative demand rather than a flat floor. Only
-    // when there's truly nothing to go on (no monthly guideline either, or zero
-    // forecasted sales for the whole month) does this fall back further to the bare
-    // operational-minimum curve total (never the productivity-scaled one — that would
-    // reintroduce "size to the target" behavior).
-    let dailyBudgetHours;
-    if (budget.allowedLaborHours != null) {
-      dailyBudgetHours = budget.allowedLaborHours;
-    } else {
-      const monthlyHours = monthlyGuidelineHoursByMonth[mk];
-      const monthlySales = monthlyForecastedSalesByMonth[mk];
-      dailyBudgetHours =
-        monthlyHours != null && monthlySales > 0
-          ? round2(monthlyHours * (dailyForecastValue / monthlySales))
-          : dayDemand.hours.reduce((sum, h) => sum + h.requiredHeadcount, 0);
-    }
+    // This day's budget = this month's guideline hours x this day's share of the month's
+    // forecasted sales, so it reflects real relative demand rather than a flat floor. Only
+    // when there's truly nothing to go on (no monthly guideline, or zero forecasted sales for
+    // the whole month) does this fall back to the bare operational-minimum curve total (never
+    // the productivity-scaled one — that would reintroduce "size to the target" behavior).
+    const monthlyHours = monthlyGuidelineHoursByMonth[mk];
+    const monthlySales = monthlyForecastedSalesByMonth[mk];
+    const dailyBudgetHours =
+      monthlyHours != null && monthlySales > 0
+        ? round2(monthlyHours * (dailyForecastValue / monthlySales))
+        : dayDemand.hours.reduce((sum, h) => sum + h.requiredHeadcount, 0);
 
     // maxJustifiedHeadcount = the ceiling the generator may staff UP TO when justified,
     // never a target to reach. laborDemandService already derives this from
@@ -205,7 +284,7 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     // this day's budget), carried one level deeper (this day's budget -> this hour's
     // ceiling), so a peak hour can still pull in extra staff purely from real hourly
     // sales shape even with no target_productivity ever entered.
-    const hasProductivityGuideline = guideline?.target_productivity != null;
+    const hasProductivityGuideline = effectiveGuideline?.target_productivity != null;
     const maxJustifiedByHour = new Map(
       dayDemand.hours.map((h) => {
         if (hasProductivityGuideline || dailyForecastValue <= 0) return [h.hour, h.maxJustifiedHeadcount];
@@ -232,8 +311,23 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       return streak;
     }
 
-    /** Finds the best-fit eligible employee of `type` for a `lengthHours` shift; null if none. Never bypasses per-employee weekly/monthly caps (Priority 2) — only `respectStoreCap: false` skips the store-level monthly check (used by coverage/minimum-staffing phases, which outrank the monthly cap per Priority 3 vs. 4). */
-    function pickEmployee(type, lengthHours, { respectStoreCap = true } = {}) {
+    /**
+     * Finds the best-fit eligible employee of `type` for a `lengthHours` shift; null if none.
+     * Never bypasses per-employee weekly/monthly caps (Priority 2) — only `respectStoreCap:
+     * false` skips the store-level monthly check (used by coverage/minimum-staffing phases,
+     * which outrank the monthly cap per Priority 3 vs. 4).
+     *
+     * `respectPreferredDayOff: true` (Full-time only) excludes anyone whose staggered
+     * preferred rest day (see preferredDayOffByEmployee above) is today, returning null if
+     * that leaves nobody — this is what actually gives a designated Full-time employee a
+     * real day off: their caller (guaranteeCoverage) falls through to Part-time instead of
+     * silently reassigning them to a different role the same day, which is all a same-day
+     * reshuffle would achieve. Every other caller passes false (the default) — by the time
+     * minimum-staffing/productivity-fill reach for Full-time at all, Part-time has already
+     * been tried and failed, so that's already the genuine last resort and the day-off
+     * preference no longer applies.
+     */
+    function pickEmployee(type, lengthHours, { respectStoreCap = true, respectPreferredDayOff = false } = {}) {
       const candidates = employees
         .filter((emp) => {
           if (employeeShiftType(emp) !== type) return false;
@@ -260,6 +354,10 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
           // Part-time is paid hourly — fair distribution (least-used first) is the right default.
           return (monthlyUsed[`${a.id}-${mk}`] || 0) - (monthlyUsed[`${b.id}-${mk}`] || 0);
         });
+
+      if (type === 'FULL_TIME' && respectPreferredDayOff) {
+        return candidates.find((emp) => !preferredDayOffByEmployee.get(emp.id)?.has(date)) || null;
+      }
       return candidates[0] || null;
     }
 
@@ -290,26 +388,44 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
      * Guarantees opening (09:00 start) or closing (22:00 end) coverage.
      * Full-time is salaried and must be filled toward its 48h/week cap
      * (6 days) BEFORE Part-time is used at all — an eligible Full-time
-     * employee (not yet at their weekly/daily/consecutive-day limit) always
-     * wins this slot, regardless of whether an 8h shift fits the day's
+     * employee (not yet at their weekly/daily/consecutive-day limit) wins
+     * this slot, regardless of whether an 8h shift fits the day's
      * labor-hour guideline. The guideline stays a REPORTED target (see
      * budgetShortfalls below) — coverage and Full-time utilization both
      * outrank it, the same "guideline is a ceiling, never a fill target"
      * rule already applied elsewhere, now also applied to the FT/PT choice
      * itself so a tight daily budget can never silently starve a second
-     * Full-time employee down to Part-time hours. Part-time (sized to fit
-     * dailyBudgetRemaining, 4-8h) only fills this slot once no Full-time
-     * employee is left eligible for the day.
+     * Full-time employee down to Part-time hours.
+     *
+     * The one exception: a Full-time employee on their staggered preferred
+     * rest day today (see preferredDayOffByEmployee) is skipped in favor of
+     * Part-time here — without this, when a store needs 2+ concurrent
+     * Full-time-eligible roles a day (e.g. opener + closer) and has exactly
+     * that many Full-time employees, "skip me today" for one role just
+     * reassigns them to the OTHER role instead of actually giving them the
+     * day off, since they're still the only remaining candidate for it —
+     * every Full-time employee ends up working every single day regardless,
+     * hitting their 48h cap in lockstep and landing everyone's one real day
+     * off on the same date. Only once BOTH a non-preferred-off Full-time
+     * employee AND Part-time are unavailable does this fall back to using
+     * the preferred-off Full-time employee anyway — coverage is still never
+     * silently dropped just to honor the stagger.
      */
     function guaranteeCoverage({ isOpening, dailyBudgetRemaining }) {
       const ftStart = isOpening ? OPERATING_HOURS.start : OPERATING_HOURS.end - FULL_TIME_CLOCK_SPAN_HOURS;
       const ptLength = clampPartTimeHours(Math.max(dailyBudgetRemaining, PART_TIME_MIN_HOURS));
-      const ptStart = isOpening ? OPERATING_HOURS.start : OPERATING_HOURS.end - ptLength;
+      // Closing must position the shift so it ENDS exactly at closing time — when ptLength
+      // exceeds the 5-hour break threshold, buildShiftRow adds a 1h break that extends the
+      // clock span beyond ptLength, so the start has to move back an extra hour to compensate.
+      const ptStart = isOpening ? OPERATING_HOURS.start : OPERATING_HOURS.end - partTimeClockSpanHours(ptLength);
 
-      const ftRow = place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: false });
+      const ftRow = place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: false, respectPreferredDayOff: true });
       if (ftRow) return ftRow;
 
-      return place('PART_TIME', ptStart, ptLength, { respectStoreCap: false });
+      const ptRow = place('PART_TIME', ptStart, ptLength, { respectStoreCap: false });
+      if (ptRow) return ptRow;
+
+      return place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: false });
     }
 
     const openingResult = guaranteeCoverage({ isOpening: true, dailyBudgetRemaining: dailyBudgetHours });
@@ -407,7 +523,9 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       if (targetHour == null) break; // no hour has room under its productivity-justified ceiling — nothing more to add
 
       const ptLength = clampPartTimeHours(Math.min(remainingDailyBudget, PART_TIME_MAX_HOURS));
-      const ptStart = Math.min(Math.max(targetHour, OPERATING_HOURS.start), OPERATING_HOURS.end - ptLength);
+      // Same clock-span correction as guaranteeCoverage above — a >5h Part-time shift's break
+      // pushes its end 1h later than ptLength alone would suggest, so keep it inside operating hours.
+      const ptStart = Math.min(Math.max(targetHour, OPERATING_HOURS.start), OPERATING_HOURS.end - partTimeClockSpanHours(ptLength));
       let placed = place('PART_TIME', ptStart, ptLength, { respectStoreCap: true });
 
       if (!placed && remainingDailyBudget >= FULL_TIME_SHIFT_HOURS) {

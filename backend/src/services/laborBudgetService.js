@@ -1,4 +1,5 @@
 const laborBudgetRepo = require('../repositories/laborBudgetRepository');
+const whrTargetRepo = require('../repositories/whrTargetRepository');
 const { weekdayOf, monthRange } = require('../utils/dateRange');
 const { computeMonthlyForecastedSales } = require('./forecastService');
 
@@ -168,6 +169,35 @@ async function resolveMonthlyLaborHoursGuideline({ storeId, monthKey, manualMont
 }
 
 /**
+ * The target_productivity roster generation actually feeds into
+ * laborDemandService (the productivity-floor ceiling driving how many extra
+ * staff a busy hour can justify — see maxJustifiedHeadcount):
+ *   1. The store's own manually-entered labor_guideline.target_productivity,
+ *      when set — an explicit human override always wins.
+ *   2. Otherwise, this store's most recent REAL reported productivity from
+ *      WHR Target Import (whr_target_monthly) — the store's own actual
+ *      historical performance is a far better basis for "how many people
+ *      does an hour of this store's sales justify" than the alternative
+ *      (nothing at all — every real store checked has no labor_guideline
+ *      row, so target_productivity has never had ANY value to work with
+ *      before WHR Target existed).
+ * Returns { value: null, source: null } when neither exists — callers must
+ * keep behaving exactly as they do today for a store with no data at all
+ * (laborDemandService already floors to the operational minimum in that
+ * case), not invent a number.
+ */
+async function resolveTargetProductivity({ storeId, manualTargetProductivity }) {
+  if (manualTargetProductivity != null) {
+    return { value: Number(manualTargetProductivity), source: 'MANUAL' };
+  }
+  const latest = await whrTargetRepo.findLatestProductivity(storeId);
+  if (latest?.productivity != null) {
+    return { value: latest.productivity, source: 'WHR_TARGET_HISTORY', reportMonth: latest.reportMonth };
+  }
+  return { value: null, source: null };
+}
+
+/**
  * A store's total sales for one month (SUM(sales_report.gross_actual),
  * grouped by store_id + the given month), mapped through the Monthly Labor
  * Hours guideline table above. Reuses findGrossBudgetRange as-is (same
@@ -197,4 +227,5 @@ module.exports = {
   getMonthlyLaborGuideline,
   computeMonthlySalesSummary,
   resolveMonthlyLaborHoursGuideline,
+  resolveTargetProductivity,
 };

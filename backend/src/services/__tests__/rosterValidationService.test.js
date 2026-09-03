@@ -451,6 +451,64 @@ describe('rosterValidationService.validateRoster — Full-time working hours, br
     expect(result.status).toBe('FAILED');
   });
 
+  test('6. a Part-time shift of more than 5 continuous hours with no break is flagged (ptBreakViolations)', async () => {
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: [makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '15:00', hours: 6, employee: makeEmployee('E1', { position_time_type: 'Part time' }) })], // 6h, no break
+    });
+    forecastRepo.findForecastRows.mockResolvedValue([forecastRow('2026-08-24', 9, 500)]);
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.ptBreakViolations).toHaveLength(1);
+    expect(result.ptBreakViolations[0]).toMatchObject({ employeeId: 'E1' });
+    expect(result.status).toBe('FAILED');
+  });
+
+  test('6. a Part-time shift of exactly 5 continuous hours needs no break and is never flagged (ptBreakViolations)', async () => {
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: [makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '14:00', hours: 5, employee: makeEmployee('E1', { position_time_type: 'Part time' }) })], // exactly 5h, no break
+    });
+    forecastRepo.findForecastRows.mockResolvedValue([forecastRow('2026-08-24', 9, 500)]);
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.ptBreakViolations).toHaveLength(0);
+  });
+
+  test('6. a Part-time shift of more than 5 hours WITH its 1h break is compliant, never flagged (ptBreakViolations)', async () => {
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: [
+        makeShift({ id: 's1', employeeId: 'E1', date: '2026-08-24', start: '09:00', end: '16:00', hours: 6, employee: makeEmployee('E1', { position_time_type: 'Part time' }), breakStart: '14:00', breakEnd: '15:00' }),
+      ],
+    });
+    forecastRepo.findForecastRows.mockResolvedValue([forecastRow('2026-08-24', 9, 500)]);
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.ptBreakViolations).toHaveLength(0);
+  });
+
+  test('6. a Part-time employee working well under 48 hours across a week is never flagged as a weekly-hour violation — Part-time has no 48h/week requirement', async () => {
+    const emp = makeEmployee('E1', { position_time_type: 'Part time' });
+    const dates = Array.from({ length: 7 }, (_, i) => `2026-08-${String(i + 1).padStart(2, '0')}`);
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      // 4h/day x 7 days = 28h total for the week — well under 48h, and Full-time's 48h cap
+      // simply never applies to Part-time in the first place (ftWeeklyHourViolations only
+      // ever looks at Full-time employees).
+      shifts: dates.map((d, i) => makeShift({ id: `s${i}`, employeeId: 'E1', date: d, start: '09:00', end: '13:00', hours: 4, employee: emp })),
+    });
+    forecastRepo.findForecastRows.mockResolvedValue(dates.map((d) => forecastRow(d, 9, 500)));
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-01', endDate: '2026-08-07' });
+
+    expect(result.ftWeeklyHourViolations).toHaveLength(0);
+    expect(result.ptBreakViolations).toHaveLength(0);
+  });
+
   test('a shift starting before 09:00 or ending after 22:00 is flagged (shiftWindowViolations)', async () => {
     mockData({
       guideline: { target_productivity: 500, min_staff_per_shift: 1 },
@@ -499,6 +557,7 @@ describe('rosterValidationService.validateRoster — Full-time working hours, br
     expect(result.ftWorkingHoursViolations).toHaveLength(0);
     expect(result.ftBreakViolations).toHaveLength(0);
     expect(result.ptHoursViolations).toHaveLength(0);
+    expect(result.ptBreakViolations).toHaveLength(0);
     expect(result.shiftWindowViolations).toHaveLength(0);
     expect(result.doubleBookingViolations).toHaveLength(0);
     expect(result.consecutiveDayViolations).toHaveLength(0);

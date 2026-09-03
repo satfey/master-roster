@@ -17,10 +17,21 @@
  * span); FULL_TIME_CLOCK_SPAN_HOURS positions a shift within the day
  * (start_time -> end_time) only.
  *
- * Part-time: 4-8 hours, never shorter or longer, no mandatory break modeled.
- * 8h is a hard ceiling — the system never schedules a Part-time shift beyond
- * it, so overtime is avoided by construction rather than tracked separately.
+ * Part-time: 4-8 working hours, never shorter or longer. 8h is a hard
+ * ceiling — the system never schedules a Part-time shift beyond it, so
+ * overtime is avoided by construction rather than tracked separately.
  *
+ * Part-time break (Labour Protection Act B.E. 2541, Section 27): a rest
+ * break of at least 1 hour is required after working more than 5
+ * consecutive hours — not "PT shifts of X+ hours", since the trigger the
+ * law names is continuous working time, not a shift-length bracket. A PT
+ * shift of exactly 5 working hours or less needs no break; a PT shift of
+ * MORE than 5 working hours gets a 1-hour unpaid break placed after the
+ * first PART_TIME_BREAK_THRESHOLD_HOURS worked (mirroring how Full-time's
+ * break is placed after its first 4 hours), extending the clock span by
+ * PART_TIME_BREAK_HOURS the same way Full-time's does.
+ *
+
  * FULL_TIME_MAX_CONSECUTIVE_DAYS is the Thailand labor-law baseline: a
  * Full-time employee must get a rest day at least every 6 consecutive
  * working days (48h/week + 8h/shift already implies at most 6 shifts within
@@ -33,10 +44,17 @@ const FULL_TIME_CLOCK_SPAN_HOURS = FULL_TIME_SHIFT_HOURS + FULL_TIME_BREAK_HOURS
 const FULL_TIME_MAX_CONSECUTIVE_DAYS = 6;
 const PART_TIME_MIN_HOURS = 4;
 const PART_TIME_MAX_HOURS = 8;
+const PART_TIME_BREAK_THRESHOLD_HOURS = 5; // more than this many consecutive working hours triggers the mandatory break
+const PART_TIME_BREAK_HOURS = 1;
 const DEFAULT_WEEKLY_HOURS = 48; // fallback when employee.default_weekly_hours is null, matching the legacy rosterService MAX_WEEKLY_HOURS
 
 function weeklyCapFor(employee) {
   return employee.default_weekly_hours != null ? Number(employee.default_weekly_hours) : DEFAULT_WEEKLY_HOURS;
+}
+
+/** How much wall-clock room a Part-time shift of `workingHours` needs, including its break when one is legally required — used wherever a shift must be positioned to END at a specific clock time (e.g. store closing). */
+function partTimeClockSpanHours(workingHours) {
+  return workingHours + (workingHours > PART_TIME_BREAK_THRESHOLD_HOURS ? PART_TIME_BREAK_HOURS : 0);
 }
 
 function employeeShiftType(employee) {
@@ -53,7 +71,10 @@ module.exports = {
   FULL_TIME_MAX_CONSECUTIVE_DAYS,
   PART_TIME_MIN_HOURS,
   PART_TIME_MAX_HOURS,
+  PART_TIME_BREAK_THRESHOLD_HOURS,
+  PART_TIME_BREAK_HOURS,
   DEFAULT_WEEKLY_HOURS,
   weeklyCapFor,
+  partTimeClockSpanHours,
   employeeShiftType,
 };

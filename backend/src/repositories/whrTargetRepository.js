@@ -45,6 +45,26 @@ async function findExistingRecordKeys(storeIds, reportMonth) {
 }
 
 /**
+ * The most recent real productivity figure reported for this store, if any —
+ * used to derive a target_productivity for roster generation when no manual
+ * one is configured (see laborBudgetService.resolveTargetProductivity). Only
+ * a row with a non-null productivity counts; a month whose WHR Target row
+ * exists but left that field blank is skipped rather than treated as 0.
+ */
+async function findLatestProductivity(storeId) {
+  const { data, error } = await supabase
+    .from('whr_target_monthly')
+    .select('productivity, report_month')
+    .eq('store_id', storeId)
+    .not('productivity', 'is', null)
+    .order('report_month', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? { productivity: Number(data.productivity), reportMonth: data.report_month } : null;
+}
+
+/**
  * Writes whr_target_monthly rows as an atomic upsert on the (store_id,
  * report_month) unique constraint: a key not yet in the table is inserted, a
  * key that already exists is overwritten in place — the newly uploaded file
@@ -68,4 +88,4 @@ async function upsertRecords(records) {
   return data.length;
 }
 
-module.exports = { findStoresByCodes, getWhrTargetSourceType, findExistingRecordKeys, upsertRecords, recordKey };
+module.exports = { findStoresByCodes, getWhrTargetSourceType, findExistingRecordKeys, findLatestProductivity, upsertRecords, recordKey };

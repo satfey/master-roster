@@ -402,47 +402,47 @@ export default function AutoRosterTab() {
         <Card title="Staff Roster">
           <div style={{ overflowX: "auto" }}>
             <div style={{ maxHeight: 520, overflowY: "auto" }}>
+              {/* Rows = day (Mon/Tue/...), columns = position — swapped from the original
+                  columns-as-day layout so a typical week view is a fixed ~7 rows tall instead of
+                  needing horizontal scroll; a long date range now grows tall instead of wide. */}
               <table style={{ borderCollapse: "collapse", fontSize: 12, width: "100%" }}>
                 <thead>
                   <tr>
-                    <th style={{ ...th, position: "sticky", left: 0, background: "#f8fafc", minWidth: 160, zIndex: 1 }}>POSITION</th>
-                    {dates.map((d) => (
-                      <th key={d} style={{ ...th, minWidth: 130, textAlign: "center" }}>
-                        <div>{weekdayLabel(d)}</div>
-                        <div style={{ fontWeight: 400, color: "#94a3b8" }}>{d.slice(5)}</div>
+                    <th style={{ ...th, position: "sticky", left: 0, background: "#f8fafc", minWidth: 110, zIndex: 1 }}>DATE</th>
+                    {employees.map((emp) => (
+                      <th key={emp.id} style={{ ...th, minWidth: 130, textAlign: "center" }}>
+                        {/* Position only — never the employee's name or job title, so nobody can tell who is scheduled for which shift from this view. */}
+                        {employeeTypeLabel(emp)}
                       </th>
                     ))}
+                    {employees.length > 0 && (
+                      <th style={{ ...th, minWidth: 90, textAlign: "center", background: "#fffbeb" }}>
+                        ACTUAL HOURS
+                        <div style={{ fontWeight: 400, color: "#92400e" }}>(store manager input)</div>
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody>
-                  {employees.map((emp) => (
-                    <tr key={emp.id}>
-                      {/* Position only — never the employee's name or job title, so nobody can tell who is scheduled for which shift from this view. */}
-                      <td style={{ ...td, position: "sticky", left: 0, background: "#fff", verticalAlign: "top" }}>
-                        <div style={{ fontWeight: 700 }}>{employeeTypeLabel(emp)}</div>
-                      </td>
-                      {dates.map((d) => (
-                        <td key={d} style={{ ...td, textAlign: "center", verticalAlign: "top" }}>
-                          <ShiftCell shift={shiftFor(emp.id, d)} />
-                        </td>
-                      ))}
-                    </tr>
-                  ))}
-                  {employees.length === 0 && (
+                  {employees.length === 0 ? (
                     <tr>
-                      <td colSpan={dates.length + 1} style={{ ...td, textAlign: "center", color: "#94a3b8", padding: 24 }}>
+                      <td style={{ ...td, textAlign: "center", color: "#94a3b8", padding: 24 }}>
                         No shifts for this range yet — click Auto Generate.
                       </td>
                     </tr>
-                  )}
-                  {employees.length > 0 && (
-                    <tr>
-                      <td style={{ ...td, position: "sticky", left: 0, background: "#fffbeb", fontWeight: 700, fontSize: 11 }}>
-                        Actual Hours
-                        <div style={{ fontWeight: 400, color: "#92400e" }}>(store manager input)</div>
-                      </td>
-                      {dates.map((d) => (
-                        <td key={d} style={{ ...td, textAlign: "center", background: "#fffbeb" }}>
+                  ) : (
+                    dates.map((d) => (
+                      <tr key={d}>
+                        <td style={{ ...td, position: "sticky", left: 0, background: "#fff", verticalAlign: "top" }}>
+                          <div style={{ fontWeight: 700 }}>{weekdayLabel(d)}</div>
+                          <div style={{ fontWeight: 400, color: "#94a3b8" }}>{d.slice(5)}</div>
+                        </td>
+                        {employees.map((emp) => (
+                          <td key={emp.id} style={{ ...td, textAlign: "center", verticalAlign: "top" }}>
+                            <ShiftCell shift={shiftFor(emp.id, d)} />
+                          </td>
+                        ))}
+                        <td style={{ ...td, textAlign: "center", background: "#fffbeb" }}>
                           <input
                             type="number"
                             min="0"
@@ -452,8 +452,8 @@ export default function AutoRosterTab() {
                             style={{ ...inp, width: 64, padding: "4px 6px", textAlign: "center" }}
                           />
                         </td>
-                      ))}
-                    </tr>
+                      </tr>
+                    ))
                   )}
                 </tbody>
               </table>
