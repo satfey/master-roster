@@ -196,14 +196,17 @@ const upload = multer({ storage: multer.memoryStorage() });
  *       completed) the real result — never a simulated/interpolated
  *       percentage. Stages run in order: parsing -> transforming ->
  *       validating -> database_insert -> completed (or failed at any
- *       point). The database_insert stage is a single atomic upsert (see
- *       the sales_report write itself) — Postgres gives no mid-statement
- *       row-count signal for it, so that stage reports `statusMessage` +
- *       elapsed time only, not a fabricated row count/percent; `stages[]`
- *       gives the client everything needed to render a "done stages get a
- *       checkmark, current stage shows elapsed time" panel. A job persists
- *       in memory for 1 hour after it starts (long enough to check back
- *       after a page refresh), then is forgotten.
+ *       point). `stages[]` gives the client everything needed to render a
+ *       "done stages get a checkmark, current stage shows elapsed time"
+ *       panel for parsing/transforming/validating, none of which report a
+ *       row-level percentage (each is one un-chunked pass over the file).
+ *       database_insert is chunked (see sales_report's upsertRecords) and
+ *       DOES report real row-level progress via `stageProgress` — percent,
+ *       rate, and ETA computed fresh on every poll from rows actually
+ *       written and real elapsed time, never estimated ahead of what has
+ *       actually landed; `stageProgress` is null for every other stage. A
+ *       job persists in memory for 1 hour after it starts (long enough to
+ *       check back after a page refresh), then is forgotten.
  *     tags: [Sales Report]
  *     parameters:
  *       - in: path
@@ -229,6 +232,16 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                         statusMessage: { type: string, example: 'Writing 100000 rows to database...' }
  *                         totalRows: { type: integer, nullable: true, description: 'Known once the parsing stage finishes.' }
  *                         elapsedSeconds: { type: number, example: 151.2 }
+ *                         stageProgress:
+ *                           type: object
+ *                           nullable: true
+ *                           description: Real row-level progress for the CURRENT stage — currently only populated during database_insert (chunked writes); null for every other stage.
+ *                           properties:
+ *                             processedRows: { type: integer, example: 72000 }
+ *                             totalRows: { type: integer, example: 100000 }
+ *                             percent: { type: integer, example: 72 }
+ *                             rowsPerSecond: { type: integer, example: 477 }
+ *                             estimatedRemainingSeconds: { type: integer, nullable: true, example: 58 }
  *                         stages:
  *                           type: array
  *                           items:
@@ -251,6 +264,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 statusMessage: Writing 100000 rows to database...
  *                 totalRows: 100000
  *                 elapsedSeconds: 151.2
+ *                 stageProgress: { processedRows: 72000, totalRows: 100000, percent: 72, rowsPerSecond: 477, estimatedRemainingSeconds: 58 }
  *                 stages:
  *                   - { name: parsing, status: completed, durationSeconds: 13.5 }
  *                   - { name: transforming, status: completed, durationSeconds: 1.0 }

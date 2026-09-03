@@ -12,6 +12,7 @@ router.use('/sales/report', require('./salesReportRoutes'));
 router.use('/sales/by-hour', require('./salesByHourRoutes'));
 router.use('/sales', require('./salesRoutes'));
 router.use('/labor', require('./laborRoutes'));
+router.use('/whr-target', require('./whrTargetRoutes'));
 router.use('/', require('./importRoutes')); // /employee/import, /store/import, /import
 router.use('/user', require('./userRoutes'));
 

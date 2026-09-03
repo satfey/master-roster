@@ -1,5 +1,17 @@
 const supabase = require('../config/supabase');
-const { runInBatches } = require('../utils/batchQuery');
+const { runInBatches, chunk } = require('../utils/batchQuery');
+
+// Rows per upsert call for the WRITE path (distinct from batchQuery's DEFAULT_BATCH_SIZE,
+// which batches READS by .in() filter-value count for URL-length reasons — this batches a
+// WRITE by row count, for request-size and progress-granularity reasons instead). Small
+// enough that a client polling progress sees real, frequent movement; large enough that a
+// 100,000-row file is ~50 requests, not thousands.
+const WRITE_BATCH_SIZE = 2000;
+// Concurrent in-flight upsert requests. Bounded (not "fire them all at once" like the
+// read-side runInBatches) because unlike reads, writes contend with each other for the
+// same rows' locks and the database's connection pool — an unbounded burst of 50 concurrent
+// multi-thousand-row upserts is more likely to slow every one of them down than help.
+const WRITE_CONCURRENCY = 4;
 
 function recordKey(storeId, date) {
   const iso = date instanceof Date ? date.toISOString().slice(0, 10) : String(date).slice(0, 10);
@@ -74,29 +86,55 @@ async function findExistingReportKeys(storeIds, dates) {
 }
 
 /**
- * Writes sales_report rows as an atomic upsert on the (store_id, report_date)
- * unique constraint (sales_report_store_id_report_date_key): a key not yet in
- * the table is inserted, a key that already exists is overwritten in place —
- * the newly uploaded file is the source of truth, so a re-imported day
- * replaces the old one rather than being rejected as a duplicate or raising
- * a 23505 unique-violation. `id` and `created_at` are deliberately absent
- * from every record here — PostgREST's DO UPDATE SET clause only touches
- * columns present in the payload, so omitting them means the DB default
+ * Writes sales_report rows via upserts on the (store_id, report_date) unique
+ * constraint (sales_report_store_id_report_date_key): a key not yet in the
+ * table is inserted, a key that already exists is overwritten in place — the
+ * newly uploaded file is the source of truth, so a re-imported day replaces
+ * the old one rather than being rejected as a duplicate or raising a 23505
+ * unique-violation. `id` and `created_at` are deliberately absent from every
+ * record here — PostgREST's DO UPDATE SET clause only touches columns
+ * present in the payload, so omitting them means the DB default
  * (gen_random_uuid() / now()) applies on insert, and the existing row's `id`
- * and original `created_at` are left completely untouched on update. A
- * single call for the whole batch, not chunked — one INSERT..ON CONFLICT
- * statement is one atomic unit in Postgres, so either every row in this
- * batch is written or (on error) none are; there is no partial-batch state
- * to roll back.
+ * and original `created_at` are left completely untouched on update.
+ *
+ * Chunked into WRITE_BATCH_SIZE-row upserts, up to WRITE_CONCURRENCY in
+ * flight at once — NOT one single call for the whole file. A very large
+ * import (tens/hundreds of thousands of rows) needs this two ways: real,
+ * row-counted progress as each chunk lands (`onBatchComplete`, consumed by
+ * salesReportImportService/importJobStore to drive the UI's progress bar —
+ * see stageProgress on GET .../import/:jobId/progress), and not sending the
+ * entire file as one giant request body. The previous single-call design's
+ * atomicity guarantee (every row in the batch written, or on error none are)
+ * is intentionally traded away here: each chunk still commits independently
+ * with the usual all-or-nothing guarantee for JUST that chunk, but a failure
+ * partway through the file leaves earlier chunks' rows written. This is
+ * safe to retry — the upsert is idempotent per (store_id, report_date), so
+ * simply re-running the same commit re-applies every row identically rather
+ * than duplicating or corrupting anything already written.
+ *
+ * `onBatchComplete`, when given, is called after each chunk lands with
+ * `{ rowsWrittenSoFar, totalRows }` — real numbers taken directly from what
+ * has actually been written and awaited, never estimated/interpolated.
  */
-async function upsertRecords(records) {
+async function upsertRecords(records, { onBatchComplete } = {}) {
   if (!records.length) return 0;
-  const { data, error } = await supabase
-    .from('sales_report')
-    .upsert(records, { onConflict: 'store_id,report_date' })
-    .select();
-  if (error) throw error;
-  return data.length;
+
+  const chunks = chunk(records, WRITE_BATCH_SIZE);
+  let rowsWrittenSoFar = 0;
+  let nextChunkIndex = 0;
+
+  async function writeNextChunk() {
+    while (nextChunkIndex < chunks.length) {
+      const batch = chunks[nextChunkIndex++];
+      const { data, error } = await supabase.from('sales_report').upsert(batch, { onConflict: 'store_id,report_date' }).select();
+      if (error) throw error;
+      rowsWrittenSoFar += data.length;
+      if (onBatchComplete) onBatchComplete({ rowsWrittenSoFar, totalRows: records.length });
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(WRITE_CONCURRENCY, chunks.length) }, writeNextChunk));
+  return rowsWrittenSoFar;
 }
 
 module.exports = { findStoresByCodes, createStores, getSalesReportSourceType, findExistingReportKeys, upsertRecords, recordKey };

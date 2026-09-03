@@ -59,6 +59,34 @@ async function salesReportImport(req, res) {
     });
 }
 
+/**
+ * Turns the raw { processed, total } importJobStore records (see
+ * salesReportRepository.upsertRecords' onBatchComplete) into the
+ * percent/rate/ETA a client actually renders — computed fresh on every poll
+ * from real numbers (rows actually written, real elapsed time within the
+ * CURRENT stage specifically, not the whole job), never a stored/cached
+ * guess. null whenever the current stage hasn't reported any chunk-level
+ * progress (parsing/transforming/validating, or database_insert before its
+ * first chunk lands).
+ */
+function buildStageProgress(job, now) {
+  if (!job.stageProgress) return null;
+  const { processed, total } = job.stageProgress;
+  const currentStageEntry = job.stages.find((s) => s.name === job.stage);
+  const stageStartedAt = currentStageEntry?.startedAt ?? job.startedAt;
+  const stageElapsedSeconds = Math.max((now - stageStartedAt) / 1000, 0.001); // avoid divide-by-zero right as the first chunk lands
+  const rowsPerSecond = Math.round(processed / stageElapsedSeconds);
+  const estimatedRemainingSeconds = rowsPerSecond > 0 ? Math.round(Math.max(total - processed, 0) / rowsPerSecond) : null;
+
+  return {
+    processedRows: processed,
+    totalRows: total,
+    percent: total > 0 ? Math.round((processed / total) * 100) : 0,
+    rowsPerSecond,
+    estimatedRemainingSeconds,
+  };
+}
+
 async function salesReportImportProgress(req, res) {
   const { jobId } = req.params;
   const job = importJobStore.getJob(jobId);
@@ -74,6 +102,7 @@ async function salesReportImportProgress(req, res) {
     statusMessage: job.statusMessage,
     totalRows: job.totalRows,
     elapsedSeconds,
+    stageProgress: buildStageProgress(job, now),
     stages: job.stages,
     error: job.error,
     result: job.result,

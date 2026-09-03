@@ -99,7 +99,7 @@ describe('salesReportImportService — dedup (unrelated to store creation)', () 
     const result = await commitSalesReportImport(buffer, 'uuid-user-1');
     expect(result.imported).toBe(0);
     expect(result.failed).toHaveLength(1);
-    expect(repo.upsertRecords).toHaveBeenCalledWith([]);
+    expect(repo.upsertRecords.mock.calls[0][0]).toEqual([]); // the records array — the 2nd arg is upsertRecords' onBatchComplete options, irrelevant here
   });
 });
 

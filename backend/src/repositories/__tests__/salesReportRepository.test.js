@@ -208,15 +208,49 @@ describe('salesReportRepository — upsertRecords (ON CONFLICT (store_id, report
     expect(row.updated_at).toBe('2026-08-27T12:00:00.000Z'); // refreshed to record this import
   });
 
-  test('sends every record in a single upsert call regardless of batch size — one statement is atomic, no partial-batch risk', async () => {
+  test('a batch smaller than WRITE_BATCH_SIZE (2000) still sends exactly one upsert call', async () => {
     const { from, upsertCalls } = createFakeFrom({ sales_report: [] });
     mockFromImpl = from;
     const records = Array.from({ length: 500 }, (_, i) => ({ store_id: String(i), report_date: '2026-07-09', updated_at: 'x' }));
 
-    await repo.upsertRecords(records);
+    const count = await repo.upsertRecords(records);
 
     expect(upsertCalls).toHaveLength(1);
     expect(upsertCalls[0].payload).toHaveLength(500);
+    expect(count).toBe(500);
+  });
+
+  // Regression coverage for the chunked-write rework: a very large file (100k+ rows) used to
+  // go through as one single upsert call with no way to report real progress mid-write and no
+  // way to avoid sending the whole file as one giant request body — see upsertRecords' own doc
+  // comment for the tradeoff (each WRITE_BATCH_SIZE-row chunk is still atomic on its own, the
+  // whole file no longer is as a unit; safe to retry since the upsert is idempotent per key).
+  test('a file larger than WRITE_BATCH_SIZE is split into multiple upsert calls, each within the size limit, and every row still lands', async () => {
+    const { from, upsertCalls } = createFakeFrom({ sales_report: [] });
+    mockFromImpl = from;
+    const records = Array.from({ length: 4500 }, (_, i) => ({ store_id: String(i), report_date: '2026-07-09', updated_at: 'x' }));
+
+    const count = await repo.upsertRecords(records);
+
+    expect(upsertCalls.length).toBeGreaterThan(1); // never one giant call for a large file
+    for (const call of upsertCalls) expect(call.payload.length).toBeLessThanOrEqual(2000);
+    expect(upsertCalls.reduce((sum, c) => sum + c.payload.length, 0)).toBe(4500); // every record covered exactly once, no gaps or overlaps
+    expect(count).toBe(4500);
+  });
+
+  test('onBatchComplete fires once per chunk with real, monotonically increasing rowsWrittenSoFar and the correct totalRows', async () => {
+    const { from } = createFakeFrom({ sales_report: [] });
+    mockFromImpl = from;
+    const records = Array.from({ length: 4500 }, (_, i) => ({ store_id: String(i), report_date: '2026-07-09', updated_at: 'x' }));
+    const onBatchComplete = jest.fn();
+
+    await repo.upsertRecords(records, { onBatchComplete });
+
+    expect(onBatchComplete).toHaveBeenCalledTimes(3); // 2000 + 2000 + 500
+    const calls = onBatchComplete.mock.calls.map(([arg]) => arg);
+    for (const call of calls) expect(call.totalRows).toBe(4500);
+    const progressValues = calls.map((c) => c.rowsWrittenSoFar).sort((a, b) => a - b);
+    expect(progressValues).toEqual([2000, 4000, 4500]); // every chunk's contribution accounted for exactly once
   });
 
   test('an empty records list never issues a request', async () => {
@@ -229,7 +263,7 @@ describe('salesReportRepository — upsertRecords (ON CONFLICT (store_id, report
     expect(upsertCalls).toHaveLength(0);
   });
 
-  test('propagates the error and writes nothing when the upsert itself fails', async () => {
+  test('propagates the error from a failing chunk (a single-chunk file still writes nothing on failure)', async () => {
     mockFromImpl = () => ({
       upsert: () => ({ select: () => Promise.resolve({ data: null, error: new Error('constraint violation') }) }),
     });

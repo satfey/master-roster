@@ -253,15 +253,13 @@ async function commitSalesReportImport(buffer, userId, jobId = null) {
     // deliberately omits from every record so it's never touched on an update).
   }));
 
-  // The write itself is a single atomic upsert (see upsertRecords' own doc comment) — Postgres
-  // gives no mid-statement row-count signal for one INSERT..ON CONFLICT covering the whole
-  // batch, so there is no real per-row progress to report here (chunking it into many smaller
-  // upserts, purely to manufacture progress events, would trade away that atomicity guarantee —
-  // out of scope for a progress-reporting change). The honest thing to report is that it started,
-  // how many rows it covers, and — once awaited below — that it finished; elapsed time is what
-  // the client shows while this line is in flight.
+  // upsertRecords chunks the write and reports real, row-counted progress as each chunk
+  // lands (see its own doc comment for the tradeoff: no longer one all-or-nothing atomic
+  // statement for the whole file, in exchange for genuine progress on a very large import).
   if (jobId) importJobStore.beginStage(jobId, 'database_insert', `Writing ${records.length} rows to database...`);
-  const imported = await repo.upsertRecords(records);
+  const imported = await repo.upsertRecords(records, {
+    onBatchComplete: jobId ? ({ rowsWrittenSoFar, totalRows }) => importJobStore.setStageProgress(jobId, { processed: rowsWrittenSoFar, total: totalRows }) : undefined,
+  });
 
   return {
     total: rows.length,

@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { UploadCloud, FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle, Loader2, Circle, RotateCcw, Receipt, Clock3, Users, Building2 } from "lucide-react";
+import { UploadCloud, FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle, Loader2, Circle, RotateCcw, Receipt, Clock3, Users, Building2, Target } from "lucide-react";
 import { Card, Btn, th, td } from "../components/ui.jsx";
 import { uploadFile, apiGet } from "../lib/api.js";
 
@@ -247,9 +247,29 @@ function JobProgressPanel({ job }) {
 
       {job.status === "importing" && (
         <div style={{ fontSize: 13, color: "#1e293b" }}>
-          <div style={{ fontWeight: 600, marginBottom: 2 }}>{job.statusMessage}</div>
-          {job.totalRows != null && <div style={{ color: "#64748b", fontSize: 12 }}>Total rows: {job.totalRows.toLocaleString()}</div>}
-          <div style={{ color: "#64748b", fontSize: 12 }}>Elapsed: {formatDuration(liveElapsedSeconds)}</div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>{job.statusMessage}</div>
+          {job.stageProgress ? (
+            // Real, row-counted progress (currently only the database_insert stage reports this —
+            // see salesReportRepository's chunked upsertRecords). Every number below comes straight
+            // from the server's job status, recomputed fresh on each poll from rows actually
+            // written and real elapsed time — never a client-side timer or interpolation.
+            <>
+              <ProgressBar value={job.stageProgress.percent} />
+              <div style={{ color: "#64748b", fontSize: 12, marginTop: 4 }}>
+                {job.stageProgress.percent}% — {job.stageProgress.processedRows.toLocaleString()} / {job.stageProgress.totalRows.toLocaleString()} rows
+              </div>
+              <div style={{ color: "#64748b", fontSize: 12, marginTop: 2 }}>
+                Elapsed: {formatDuration(liveElapsedSeconds)}
+                {job.stageProgress.rowsPerSecond > 0 && <> · Rate: {job.stageProgress.rowsPerSecond.toLocaleString()} rows/sec</>}
+                {job.stageProgress.estimatedRemainingSeconds != null && <> · ETA: {formatDuration(job.stageProgress.estimatedRemainingSeconds)}</>}
+              </div>
+            </>
+          ) : (
+            <>
+              {job.totalRows != null && <div style={{ color: "#64748b", fontSize: 12 }}>Total rows: {job.totalRows.toLocaleString()}</div>}
+              <div style={{ color: "#64748b", fontSize: 12 }}>Elapsed: {formatDuration(liveElapsedSeconds)}</div>
+            </>
+          )}
         </div>
       )}
       {job.status === "failed" && (
@@ -544,6 +564,54 @@ function StoreMasterSection() {
   );
 }
 
+function WhrTargetSection() {
+  const flow = useImportFlow("/whr-target/import/preview", "/whr-target/import");
+  return (
+    <SectionShell
+      icon={Target}
+      title="WHR Target Import"
+      description="POST /whr-target/import/preview -> /whr-target/import — รายงาน WHR Target รายเดือนต่อสาขา (CODE, Store Name, WHRS, PRODUCTIVITY, COG, SALES). เดือนอ่านจากช่อง PERIOD ในไฟล์เอง ไม่ต้องระบุเอง. COG ต้องไม่เกิน 33% ของ SALES."
+      flow={flow}
+    >
+      {{
+        onFile: (f) => flow.runPreview(f, {}),
+        onConfirm: () => flow.confirmImport({}),
+        renderPreview: (p) => (
+          <>
+            <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 10 }}>
+              <StatTile label="เดือน" value={p.reportMonth ? p.reportMonth.slice(0, 7) : "-"} />
+              <StatTile label="ทั้งหมด" value={p.totalRows} />
+              <StatTile label="สาขา" value={p.storeCount} />
+              <StatTile label="ใหม่" value={p.newRows} />
+              <StatTile label="อัปเดต" value={p.updateRows} />
+              <StatTile label="ไม่ถูกต้อง" value={p.invalidRows} />
+              <StatTile label="ซ้ำในไฟล์" value={p.duplicateInFileRows} />
+              <StatTile label="COG เกิน 33%" value={p.cogOverLimitRows} />
+            </div>
+            <RowsTable
+              rows={p.rows}
+              columns={[
+                { key: "storeId", label: "Store ID" },
+                { key: "storeName", label: "Store Name" },
+                { key: "monthlySales", label: "Sales" },
+                { key: "whrs", label: "WHRS" },
+                { key: "productivity", label: "Productivity" },
+                { key: "cog", label: "COG" },
+                { key: "cogPercent", label: "COG %", render: (r) => (r.cogPercent != null ? `${(r.cogPercent * 100).toFixed(1)}%` : "-") },
+              ]}
+            />
+          </>
+        ),
+        renderResult: (r) => (
+          <StatusMessage>
+            เดือน {r.reportMonth?.slice(0, 7)} — นำเข้า {r.imported} / {r.total} แถวสำเร็จ ({r.inserted} ใหม่, {r.updated} อัปเดต) — ล้มเหลว {r.failed?.length || 0} แถว
+          </StatusMessage>
+        ),
+      }}
+    </SectionShell>
+  );
+}
+
 const StatusMessage = ({ children }) => (
   <div style={{ color: "#16a34a", fontSize: 13, fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
     <CheckCircle2 size={15} /> {children}
@@ -560,6 +628,7 @@ export default function UploadExcelTab() {
       <SalesByHourSection />
       <EmployeeMasterSection />
       <StoreMasterSection />
+      <WhrTargetSection />
     </div>
   );
 }

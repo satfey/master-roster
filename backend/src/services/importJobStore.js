@@ -55,6 +55,12 @@ function createJob(id) {
       durationSeconds: null,
     })),
     statusMessage: 'Reading Excel file...',
+    // Real sub-stage progress, currently only ever populated during "database_insert" (see
+    // setStageProgress/salesReportRepository's chunked upsertRecords) — { processed, total }
+    // taken directly from rows actually written and awaited, never estimated. null whenever
+    // the current stage has no such per-chunk signal (parsing/transforming/validating are
+    // each one un-chunked call — see the stage checklist for those instead).
+    stageProgress: null,
     error: null,
     result: null,
   };
@@ -87,6 +93,7 @@ function beginStage(id, stage, statusMessage) {
 
   job.stage = stage;
   job.statusMessage = statusMessage;
+  job.stageProgress = null; // a new stage starts with no progress of its own yet
   job.updatedAt = t;
 }
 
@@ -94,6 +101,14 @@ function setTotalRows(id, totalRows) {
   const job = jobs.get(id);
   if (!job) return;
   job.totalRows = totalRows;
+  job.updatedAt = now();
+}
+
+/** Real, row-counted progress within the CURRENT stage (currently only database_insert reports this — see salesReportRepository.upsertRecords' onBatchComplete). */
+function setStageProgress(id, { processed, total }) {
+  const job = jobs.get(id);
+  if (!job) return;
+  job.stageProgress = { processed, total };
   job.updatedAt = now();
 }
 
@@ -141,4 +156,4 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-module.exports = { createJob, getJob, beginStage, setTotalRows, complete, fail };
+module.exports = { createJob, getJob, beginStage, setTotalRows, setStageProgress, complete, fail };
