@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { UploadCloud, FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle, Loader2, Circle, RotateCcw, Receipt, Clock3, Users, Building2, Target } from "lucide-react";
+import { FileSpreadsheet, AlertTriangle, CheckCircle2, XCircle, Loader2, Circle, RotateCcw, Receipt, Clock3, Users, Building2, Target } from "lucide-react";
 import { Card, Btn, th, td } from "../components/ui.jsx";
 import { uploadFile, apiGet } from "../lib/api.js";
 
@@ -291,7 +291,7 @@ function SectionShell({ icon, title, description, flow, children, canConfirm = t
   const { file, uploading, importing, progress, preview, importResult, errorMsg, jobStatus, reset } = flow;
   return (
     <Card icon={icon} title={title}>
-      <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>{description}</div>
+      {description && <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>{description}</div>}
       {extraControls}
       {!file && !importResult && <DropZone onFile={(f) => children.onFile(f)} disabled={uploading} />}
       {file && (
@@ -388,7 +388,6 @@ function SalesReportSection() {
     <SectionShell
       icon={Receipt}
       title="Sales Report Import"
-      description="POST /sales/report/import/preview -> /sales/report/import — ไฟล์รายงานยอดขายรายวัน (Store BU Id, Store Id, Store Name, Week, Date, Gross Actual, Budget, ...)."
       flow={flow}
     >
       {{
@@ -434,7 +433,6 @@ function SalesByHourSection() {
     <SectionShell
       icon={Clock3}
       title="Sales-by-Hour Import"
-      description='POST /sales/by-hour/import/preview -> /sales/by-hour/import — รายงานนี้ไม่มี column วันที่ ต้องระบุ "month" เอง (ไฟล์: Brand Name, Store Id, Store Name, Gross Sale, Hour).'
       flow={flow}
       canConfirm={!!month}
       extraControls={
@@ -484,7 +482,6 @@ function EmployeeMasterSection() {
     <SectionShell
       icon={Users}
       title="Employee Master Import"
-      description='POST /employee/import/preview -> /employee/import — ไฟล์ Employee Master จริง (Employee ID, Location, Position Time Type, ...). "Location" ต้องขึ้นต้นด้วย DQ<Store ID> หรือ ตรงกับชื่อสาขาที่มีอยู่แล้ว.'
       flow={flow}
     >
       {{
@@ -528,7 +525,6 @@ function StoreMasterSection() {
     <SectionShell
       icon={Building2}
       title="Store Master Import"
-      description="POST /store/master/import/preview -> /store/master/import — ไฟล์ Store Master จริง (Effective Date, ID, BRANCH, Zone Update)."
       flow={flow}
     >
       {{
@@ -570,7 +566,6 @@ function WhrTargetSection() {
     <SectionShell
       icon={Target}
       title="WHR Target Import"
-      description="POST /whr-target/import/preview -> /whr-target/import — รายงาน WHR Target รายเดือนต่อสาขา (CODE, Store Name, WHRS, PRODUCTIVITY, COG, SALES). เดือนอ่านจากช่อง PERIOD ในไฟล์เอง ไม่ต้องระบุเอง. COG ต้องไม่เกิน 33% ของ SALES."
       flow={flow}
     >
       {{
@@ -621,9 +616,6 @@ const StatusMessage = ({ children }) => (
 export default function UploadExcelTab() {
   return (
     <div>
-      <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>
-        <UploadCloud size={14} /> หน้าทดสอบภายใน — เรียก API upload ทั้ง 4 endpoint จริงตรงๆ ไม่ผ่าน Swagger
-      </div>
       <SalesReportSection />
       <SalesByHourSection />
       <EmployeeMasterSection />

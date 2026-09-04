@@ -402,9 +402,12 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 3 Full-time / Pa
     // than 5 continuous working hours, so a 1h break is required (Labour Protection Act s.27),
     // pushing end_time to 18:00 even though planned (working) hours stays 8. The closing PT
     // gets whatever's left (4h, the PT minimum, no break needed at <=5h) — still exactly 12h combined.
+    // Break position is chosen (chooseBreakStartHour), not hardcoded to the latest legal offset —
+    // with a single opener and flat demand, the "prefer the most balanced split" final tiebreak
+    // lands on the center of the valid {3,4,5} window (offset 4 -> 13:00), same as before.
     expect(store.shifts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ start_time: '09:00', end_time: '18:00', planned_hours: 8, break_start_time: '14:00', break_end_time: '15:00' }),
+        expect.objectContaining({ start_time: '09:00', end_time: '18:00', planned_hours: 8, break_start_time: '13:00', break_end_time: '14:00' }),
         expect.objectContaining({ start_time: '18:00', end_time: '22:00', planned_hours: 4, break_start_time: null }),
       ])
     );
@@ -478,7 +481,10 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
     // its own, permanently starving this exact mechanism. With real headroom, the peak hour now visibly
     // gets more staff than a quiet one, purely because its real sales justify it.
     expect(coverageAt(12)).toBeGreaterThan(coverageAt(10));
-    expect(coverageAt(10)).toBe(1); // the quiet hour still gets exactly the operational minimum, never padded
+    // Hour 10's own real forecasted sales (40,000 x 1/32 of the day's weight ~= 1250) genuinely
+    // justify floor(1250/500)=2 heads under target_productivity 500 — not padding, just what this
+    // specific (still much quieter than hour 12's 20x-weighted peak) hour's real demand supports.
+    expect(coverageAt(10)).toBe(2);
     expect(result.totalLaborHours).toBeGreaterThan(16); // more than the bare 1-opener + 1-closer structural minimum
   });
 
@@ -495,15 +501,23 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
     // before Part-time is used at all, so the first required closer is FT2 (8h,
     // 13:00-22:00) — FT2's shift also happens to cover FT1's break hour (13:00), so no
     // coverage gap is left there. The second required closer, with both Full-time
-    // employees already scheduled today, falls to Part-time: today's derived budget is
-    // 1000h x (today's 5000 forecast / August's 155,000 forecasted total) ~= 32.26h, so
-    // PT1 is sized to fill the remaining ~16h, clamped to its 8h ceiling. 8+8+8=24h
-    // total: still an OUTPUT of the optimization (every hour is driven by an actual
-    // coverage requirement, never padded toward the guideline) — it just no longer
-    // under-uses either the second Full-time employee or the Part-time closer because of
-    // an unrealistically tiny fallback budget.
-    expect(result.totalLaborHours).toBe(24);
-    expect(result.generatedShifts).toBe(3);
+    // employees already scheduled today, falls to Part-time — sized by real demand
+    // (growPartTimeFromEdge), not by how much budget remains: with flat ~385/hour
+    // sales the productivity ceiling justifies 0 extra heads, so once FT1+FT2 already
+    // cover every hour from 13:00 onward, the 2nd closer only extends back to the legal
+    // PART_TIME_MIN_HOURS floor (4h, 18:00-22:00) rather than maxing out to 8h/13:00 —
+    // this is the core "don't force everyone to stay until closing" fix. Mandatory
+    // coverage is therefore 8+8+4=20h. Today's derived budget is 1000h x (today's 5000
+    // forecast / August's 155,000 forecasted total) ~= 32.26h, so ~12h of it remains
+    // genuinely unused by mandatory coverage alone; the productivity ceiling and the
+    // guideline-share ceiling are reconciled (whichever is more permissive wins), and
+    // Priority 6/7 pulls in PT2 — but only for the hours immediately around the largest
+    // real gap, stopping once neighboring hours reach their own real ceiling, rather
+    // than blindly maxing a single 8h block — landing at 20+6=26h: still an OUTPUT of
+    // the optimization (bounded by the real daily budget, not exceeding it) and nowhere
+    // near the 1000h monthly guideline.
+    expect(result.totalLaborHours).toBe(26);
+    expect(result.generatedShifts).toBe(4);
     expect(result.totalLaborHours).toBeLessThan(50); // nowhere close to the 1000h monthly guideline — it is a ceiling, never a fill target
   });
 
@@ -541,6 +555,52 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
     expect(result.generatedShifts).toBe(3);
     expect(result.totalLaborHours).toBe(24);
     expect(result.validation.monthlyCapacity[0].remainingHours).toBe(-8);
+  });
+
+  test('the productivity ceiling and the monthly-guideline-share ceiling are two independent real-sales signals — the generator staffs up to whichever is more permissive, never letting the stricter one silently veto the other (real bug: store 1001 left ~400h/month unused despite a permissive guideline, purely because of an unrelated high historical productivity figure)', async () => {
+    mockFlatForecastHistory(5000);
+    const store = createFakeStore({
+      // target_productivity is set absurdly high on purpose — ~385/hour average demand can
+      // NEVER justify more than the bare operational minimum through productivity alone
+      // (floor(385/5000) = 0). Any extra staffing beyond mandatory coverage here can only be
+      // explained by the OTHER signal: the monthly-guideline's share of today's real sales.
+      guideline: { target_productivity: 5000, min_staff_per_shift: 1, monthly_labor_hours: 1000 },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2')],
+    });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // Same arithmetic as the "total labor hours are an OUTPUT..." test above: mandatory
+    // coverage is 20h (FT1 8h opener + FT2 8h first closer + a demand-fitted, legal-minimum
+    // 4h second closer — real demand doesn't justify extending it further once FT1+FT2 already
+    // cover the afternoon/evening), then Priority 6/7 pulls in PT2 for the hours around the
+    // largest real gap (6h) = 26h. With target_productivity this high, the OLD behavior
+    // (productivity wins whenever it's configured) would have frozen this at exactly 20h —
+    // PT2 would never have been used; confirming the guideline-share ceiling is genuinely
+    // what's justifying PT2 here, not productivity.
+    expect(result.totalLaborHours).toBe(26);
+    expect(store.shifts.some((s) => s.employee_id === 'PT2')).toBe(true);
+  });
+
+  test('conversely, a real productivity-justified opportunity is still taken even when the monthly-guideline share alone would be too tight to justify it', async () => {
+    mockFlatForecastHistory(20000); // ~1538/hour spread flat across 13 operating hours
+    const store = createFakeStore({
+      // target_productivity 300 against the real ~1538/hour flat demand justifies floor(1538/300)
+      // = 5 heads per hour. The guideline share alone (32h budget / 13 flat hours) justifies only
+      // floor(32/13) = 2 — already met (or exceeded) by mandatory coverage alone (3 PT-only
+      // mandatory shifts overlapping through the middle of the day), so the guideline-share
+      // signal by itself would show no gap left to fill anywhere.
+      guideline: { target_productivity: 300, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(32) },
+      employees: Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`)),
+    });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // A 4th shift beyond the 3 mandatory (opener + 2 closers) can only be explained by
+    // target_productivity's higher (5-head) ceiling — the guideline-share ceiling (2) alone
+    // would already be satisfied by mandatory coverage, with no gap left for discretionary fill.
+    expect(result.generatedShifts).toBe(4);
+    expect(result.totalLaborHours).toBeGreaterThan(24); // strictly more than mandatory-only coverage
   });
 });
 
@@ -752,7 +812,7 @@ describe('rosterGenerationService.generateDraftRoster — closing coverage requi
     expect(new Set(closers.map((s) => s.employee_id)).size).toBe(closers.length); // never the same employee twice
   });
 
-  test('business example: Full-time 13:00-22:00 + Part-time 16:00-22:00 both closing is valid', async () => {
+  test('business example: Full-time 13:00-22:00 + Part-time closing is demand-fitted, not maxed out to the remaining budget', async () => {
     mockFlatForecastHistory(1000);
     const store = createFakeStore({
       guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(22) },
@@ -763,13 +823,19 @@ describe('rosterGenerationService.generateDraftRoster — closing coverage requi
 
     const closers = store.shifts.filter((s) => s.end_time === '22:00');
     expect(closers).toHaveLength(2);
-    // The Part-time closer's 6 working hours are more than the 5-hour continuous-work
-    // threshold, so it now needs the mandatory 1h break (Labour Protection Act s.27) —
-    // start moves back to 15:00 (break 20:00-21:00) so it still ends exactly at closing.
+    // Under flat, low (~77/hour) demand, target_productivity 500 justifies no extra heads
+    // beyond the operational minimum (1) — FT1 (opener, 09:00-18:00) and FT2 (first closer,
+    // 13:00-22:00) already cover every hour from 13:00 onward on their own, so the 2nd closer
+    // (PT1) has nothing left to demand-justify: growPartTimeFromEdge trims it to exactly the
+    // legal PART_TIME_MIN_HOURS floor (4h, 18:00-22:00, no break) instead of consuming the
+    // ~6h still nominally left in the daily budget the way the old budget-maxed sizing did —
+    // this is the "closing = max(operationalMinimum, salesJustifiedRequirement), never padded
+    // just because it's closing" fix (and, since PT1 is now only 4h with no break at all, the
+    // simultaneous-break collision risk that a shared long window created is gone too).
     expect(closers).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ start_time: '13:00', planned_hours: 8 }),
-        expect.objectContaining({ start_time: '15:00', planned_hours: 6, break_start_time: '20:00', break_end_time: '21:00' }),
+        expect.objectContaining({ start_time: '13:00', planned_hours: 8, break_start_time: '17:00', break_end_time: '18:00' }),
+        expect.objectContaining({ start_time: '18:00', planned_hours: 4, break_start_time: null, break_end_time: null }),
       ])
     );
   });
@@ -1013,7 +1079,11 @@ describe('rosterGenerationService.generateDraftRoster — Part-time rest-period 
     await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
     const shift = store.shifts.find((s) => s.employee_id === 'PT1');
-    expect(shift).toMatchObject({ start_time: '09:00', end_time: '16:00', planned_hours: 6, break_start_time: '14:00', break_end_time: '15:00' });
+    // Break position is now chosen (see chooseBreakStartHour), not hardcoded to the shift's
+    // latest legal offset — with a single employee and flat demand, nothing distinguishes the
+    // legally valid offsets (1-5 for a 6h shift) except the "prefer the most balanced split"
+    // final tiebreak, which lands on the center (offset 3 -> 12:00), not the old fixed +5.
+    expect(shift).toMatchObject({ start_time: '09:00', end_time: '16:00', planned_hours: 6, break_start_time: '12:00', break_end_time: '13:00' });
     const clockSpan = Number(shift.end_time.slice(0, 2)) - Number(shift.start_time.slice(0, 2));
     expect(clockSpan).toBe(7); // 6 working hours + 1 break hour
   });
@@ -1057,23 +1127,28 @@ describe('rosterGenerationService.generateDraftRoster — Part-time rest-period 
     expect(insufficientFtStore.shifts.filter((s) => s.employee_id === 'PT1')).toHaveLength(1);
   });
 
-  test('8. Part-time is never added just because labor budget remains — no padding toward the guideline', async () => {
+  test('8. Part-time is never added just because labor budget remains — no padding beyond what either real-sales signal (productivity or the guideline share) justifies', async () => {
     mockFlatForecastHistory(1000); // modest, sales-independent demand
     const store = createFakeStore({
-      // A huge monthly guideline — plenty of budget left after mandatory coverage — but demand
-      // stays tiny, so no hour ever justifies more staff than the operational minimum.
-      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(1000) },
+      // A generous daily budget (24h) that comfortably exceeds mandatory coverage, so neither the
+      // productivity ceiling (target_productivity 500, ~385/hour -> 0 heads) NOR the
+      // guideline-share ceiling (24h / 13 hours -> ~1 head) justifies anything beyond the
+      // operational minimum already provided by mandatory coverage — mandatory coverage itself
+      // now comes to only 20h (not 24h), since the 2nd closer is demand-fitted to the legal
+      // PART_TIME_MIN_HOURS floor rather than maxed out to whatever of the 24h budget remains.
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) },
       employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')],
     });
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    // Opening (FT1, 8h) + 2 mandatory closers (FT2 + one Part-time, since only 2 Full-time
-    // employees exist) is the entire mandatory requirement; the other 2 Part-time employees
-    // must stay completely unscheduled despite the ~1000h of "room" in the guideline.
+    // Opening (FT1, 8h) + 2 mandatory closers (FT2, 8h + one Part-time, demand-fitted down to
+    // the legal 4h minimum since FT1+FT2 already cover the rest of the day) = 20h; the other 2
+    // Part-time employees must stay completely unscheduled — neither real-sales signal justifies
+    // spending any of the ~4h nominally still left in the 24h budget beyond that.
     const usedPtIds = new Set(store.shifts.filter((s) => s.employee_id.startsWith('PT')).map((s) => s.employee_id));
     expect(usedPtIds.size).toBeLessThanOrEqual(1);
-    expect(result.totalLaborHours).toBeLessThan(30); // nowhere close to the huge guideline — an output, never a fill target
+    expect(result.totalLaborHours).toBe(20);
   });
 });
 
@@ -1133,6 +1208,126 @@ describe('rosterGenerationService.generateDraftRoster — Full-time rest days ar
     expect(ft1DayOff).toBeDefined(); // each genuinely gets a day off within the full week
     expect(ft2DayOff).toBeDefined();
     expect(ft1DayOff).not.toBe(ft2DayOff); // staggered — not both resting on the same date
+  });
+
+  test('staggering still engages for a 7-day range that is NOT Monday-aligned — regression guard for the "next 7 days starting today" case', async () => {
+    mockFlatForecastHistory(1000);
+    const store = createFakeStore({
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3'), makePartTime('PT1'), makePartTime('PT2')],
+    });
+
+    // 2026-08-19 is a Wednesday; this 7-day span runs Wed -> Tue, straddling two ISO weeks with
+    // neither one fully present in the requested range. Before this fix, the staggering pre-pass
+    // only ever engaged for a range that happened to align exactly to Monday-Sunday, so every
+    // Full-time employee who all start working on the same day converged on the identical 7th
+    // (forced-rest) day regardless of demand.
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-19', endDate: '2026-08-25' });
+
+    const allDates = ['2026-08-19', '2026-08-20', '2026-08-21', '2026-08-22', '2026-08-23', '2026-08-24', '2026-08-25'];
+    const dayOffFor = (id) => {
+      const worked = new Set(store.shifts.filter((s) => s.employee_id === id).map((s) => s.shift_date));
+      return allDates.find((d) => !worked.has(d));
+    };
+    const daysOff = ['FT1', 'FT2', 'FT3'].map(dayOffFor);
+    expect(daysOff.every((d) => d !== undefined)).toBe(true); // each of the 3 genuinely gets a day off
+    expect(new Set(daysOff).size).toBe(3); // all 3 land on DIFFERENT dates — never converging on the same one
+  });
+});
+
+/**
+ * Explicit objective-hierarchy regression suite (business correction: staggering is a MECHANISM,
+ * not the objective — the actual objective is sales-aligned manpower deployment):
+ *   1. Legal / hard operational constraints (break rules, 6-consecutive-day rest, 48h/week cap)
+ *   2. Minimum required coverage (opening, closing, per-hour operational floor)
+ *   3. Daily-sales-based Full-time day-off optimization (this describe block, tests 1-2)
+ *   4. Hourly-sales-based shift placement (this describe block, test 3)
+ *   5. Productivity / labor-hour efficiency
+ *   6. Part-time only as supplemental coverage once Full-time + minimum coverage aren't enough
+ * 1-2 exercise rosterGenerationService's existing demandByDate-sorted day-off assignment
+ * (see the "Full-time day-off staggering" block above generateDraftRoster's main loop); 3
+ * exercises the existing maxJustifiedByHour-driven fill phase (Priority 6/7) — both mechanisms
+ * already existed before this task; these tests make the sales-driven property explicit and
+ * pin it down with concrete, rank-ordered expectations rather than "not the single worst case".
+ */
+describe('rosterGenerationService.generateDraftRoster — sales-aligned manpower deployment (daily + hourly)', () => {
+  /** A distinct, known forecasted-sales amount per weekday (0=Sun..6=Sat) — every day has an unambiguous rank, not just "one day is obviously highest". */
+  function mockWeekdayShapedForecastHistory(amountByWeekday) {
+    const rows = [];
+    const end = new Date('2026-08-01T00:00:00Z');
+    for (let i = 1; i <= 28; i++) {
+      const d = new Date(end.getTime() - i * 24 * 60 * 60 * 1000);
+      rows.push({ report_date: d.toISOString().slice(0, 10), gross_actual: amountByWeekday[d.getUTCDay()] });
+    }
+    forecastRepo.findDailySalesHistory.mockResolvedValue(rows);
+    forecastRepo.findHourlySalesHistory.mockResolvedValue([]);
+    forecastRepo.findAllHourlySalesHistory.mockResolvedValue([]);
+    forecastRepo.createModelRun.mockResolvedValue({ id: 'model-x' });
+    let forecastRows = [];
+    forecastRepo.upsertForecastRows.mockImplementation(async (rows2) => { forecastRows.push(...rows2); return rows2; });
+    forecastRepo.findForecastRows.mockImplementation(async ({ storeId, startDate, endDate, hourly }) =>
+      forecastRows.filter((r) => r.store_id === storeId && r.forecast_date >= startDate && r.forecast_date <= endDate && (hourly ? r.daypart !== 'FULL_DAY' : r.daypart === 'FULL_DAY'))
+    );
+  }
+
+  test('1. Full-time days off are assigned to the SPECIFIC lowest-demand days, in ascending rank order — not merely "avoid the single highest"', async () => {
+    // 2026-08-17 (Mon) .. 2026-08-23 (Sun), every weekday a distinct, known amount:
+    // Tue (100, lowest) < Thu (200) < Mon (500) < Wed (800) < Fri (900) < Sat (1000) < Sun (1200, highest).
+    mockWeekdayShapedForecastHistory({ 1: 500, 2: 100, 3: 800, 4: 200, 5: 900, 6: 1000, 0: 1200 });
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 30 }]);
+    const store = createFakeStore({
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-17', endDate: '2026-08-23' });
+
+    const allDates = ['2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20', '2026-08-21', '2026-08-22', '2026-08-23'];
+    const dayOffFor = (id) => {
+      const worked = new Set(store.shifts.filter((s) => s.employee_id === id).map((s) => s.shift_date));
+      return allDates.find((d) => !worked.has(d));
+    };
+    // Tue 2026-08-18 (lowest) and Thu 2026-08-20 (2nd-lowest) are exactly the two days FT1/FT2
+    // should prefer, employee-index order matching ascending demand rank.
+    expect(dayOffFor('FT1')).toBe('2026-08-18');
+    expect(dayOffFor('FT2')).toBe('2026-08-20');
+  });
+
+  test("2. the higher-demand day this week retains MORE total scheduled labor hours than the lower-demand day staggering deliberately thinned out", async () => {
+    mockWeekdayShapedForecastHistory({ 1: 500, 2: 100, 3: 800, 4: 200, 5: 900, 6: 1000, 0: 1200 });
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 30 }]);
+    const store = createFakeStore({
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-17', endDate: '2026-08-23' });
+
+    // Total scheduled HOURS, not headcount: minimum operational coverage (a hard constraint —
+    // never zero staff during any operating hour) can force MORE distinct small Part-time
+    // bodies on a quiet day precisely because staggering pulled a Full-time employee away that
+    // day (e.g. Sunday: FT+FT+1 PT closer = 24h from 3 people; Tuesday, missing one Full-time
+    // to its staggered rest day: FT+3 smaller PT fill-ins = 20h from 4 people) — more bodies but
+    // fewer hours. Headcount alone would be a misleading proxy here; total hours is the real
+    // "how much manpower did this day get" signal, and it must track demand rank correctly.
+    const hoursOn = (date) => store.shifts.filter((s) => s.shift_date === date).reduce((sum, s) => sum + s.planned_hours, 0);
+    // Sunday (highest demand, 2026-08-23) vs Tuesday (lowest demand, 2026-08-18, exactly where
+    // FT1 was staggered off).
+    expect(hoursOn('2026-08-23')).toBeGreaterThan(hoursOn('2026-08-18'));
+  });
+
+  test('3. hourly manpower follows the hourly sales curve: the real forecasted peak hour is staffed at or above an ordinary baseline hour', async () => {
+    mockShapedForecastHistory(3200, { 15: 20 }); // hour 15 is the real demand peak; every other operating hour is flat baseline
+    laborBudgetRepo.findGuidelineTiers.mockResolvedValue([{ id: 't1', store_id: null, sales_min: 0, sales_max: 49999, allowed_labor_hours: 30 }]);
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(40) },
+      employees: Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`)),
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    function coverageAt(hour) {
+      return store.shifts.filter((s) => Number(s.start_time.slice(0, 2)) <= hour && hour < Number(s.end_time.slice(0, 2))).length;
+    }
+    expect(coverageAt(15)).toBeGreaterThan(coverageAt(9)); // the real forecasted peak hour vs. an ordinary baseline hour
+    expect(coverageAt(9)).toBe(1); // the baseline hour still gets exactly the operational minimum — never padded ahead of real demand
   });
 });
 
@@ -1222,17 +1417,23 @@ describe('rosterGenerationService.generateDraftRoster — Full-time day-off sche
 
   test('Case 5: no Full-time employee ever works 7 consecutive calendar days', async () => {
     mockFlatForecastHistory(1000);
-    const store = createFakeStore({
-      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')],
-    });
+    const employees = [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')];
+    const store = createFakeStore({ employees });
 
     await generateDraftRoster({ storeId: '1005', startDate: '2026-08-17', endDate: '2026-09-06' });
 
+    // FULL_TIME_MAX_CONSECUTIVE_DAYS (the Thailand labor-law baseline this test protects) is
+    // enforced only for Full-time employees (see pickEmployee's `type === 'FULL_TIME'` check) —
+    // Part-time was never covered by it, so this test — despite iterating every worked-date set
+    // below — only asserts the rule for the two Full-time employees, matching its own title.
+    const ftIds = new Set(employees.filter((e) => e.position_time_type === 'Full time').map((e) => e.id));
     const byEmployee = new Map();
     for (const s of store.shifts) {
+      if (!ftIds.has(s.employee_id)) continue;
       if (!byEmployee.has(s.employee_id)) byEmployee.set(s.employee_id, new Set());
       byEmployee.get(s.employee_id).add(s.shift_date);
     }
+    expect(byEmployee.size).toBe(2); // sanity: both Full-time employees actually worked in this range
     for (const dateSet of byEmployee.values()) {
       expect(maxConsecutiveRun([...dateSet].sort())).toBeLessThanOrEqual(6);
     }
@@ -1303,5 +1504,393 @@ describe('rosterGenerationService.generateDraftRoster — Full-time day-off sche
     const day7Opener = store.shifts.find((s) => s.shift_date === '2026-08-23' && s.start_time === '09:00');
     expect(day7Opener.employee_id).not.toBe('FT1');
     expect(day7Opener.employee_id.startsWith('PT')).toBe(true);
+  });
+});
+
+/**
+ * Business correction (redesigned break allocation): break TIME is no longer a hardcoded
+ * start+4 (FT) / start+5 (PT) offset — chooseBreakStartHour (rosterGenerationService.js) picks
+ * among every legally valid offset (validBreakOffsets, employeeShiftRules.js — every split that
+ * keeps both segments of the shift <= 5 consecutive hours), preferring in order: (1) no coverage
+ * gap at the candidate hour, (2) lower real hourly sales, (3) fewest OTHER employees already on
+ * break there today (staggering — a tiebreak, never the primary goal), (4) the most balanced
+ * split as a final default when nothing else distinguishes the candidates. Duration, legal
+ * compliance, and total planned/working hours are all unchanged — only WHERE within the shift
+ * the break sits can move.
+ */
+describe('rosterGenerationService.generateDraftRoster — sales-driven staggered break placement', () => {
+  test('1. multiple Full-time employees starting the same hour do not automatically receive the same break hour when staggering is feasible', async () => {
+    mockFlatForecastHistory(1000); // flat demand -> nothing but staggering distinguishes the candidates
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')], // no Part-time -> both closers are Full-time
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // Both closers start at 13:00 (guaranteeCoverage's fixed closer start formula), so their
+    // legal break windows are identical ({16:00, 17:00, 18:00}) — under the old hardcoded
+    // start+4 offset, both would land on 17:00 simultaneously.
+    const closers = store.shifts.filter((s) => s.start_time === '13:00' && s.end_time === '22:00');
+    expect(closers).toHaveLength(2);
+    expect(closers[0].break_start_time).not.toBe(closers[1].break_start_time);
+  });
+
+  test('2. a break prefers the lower-sales candidate hour within the legal window when coverage remains sufficient', async () => {
+    // Hour 13 gets 20x the weight of every other operating hour -> unambiguously the highest-sales
+    // hour in the opener's legal break window ({12:00, 13:00, 14:00}, offsets 3-5 from a 09:00 start).
+    mockShapedForecastHistory(3200, { 13: 20 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const opener = store.shifts.find((s) => s.start_time === '09:00');
+    expect(opener.break_start_time).toBe('12:00'); // the lower-sales hour, not 13:00 (highest) or 14:00
+  });
+
+  test('3. a peak/high-sales hour retains its required manpower — no break lands there when a lower-sales legal alternative exists', async () => {
+    mockShapedForecastHistory(3200, { 13: 20 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // None of the day's shifts (opener 09:00-18:00, both closers 13:00-22:00 — all of whose legal
+    // windows include 13:00) actually put their break at the peak hour.
+    expect(store.shifts.every((s) => s.break_start_time !== '13:00')).toBe(true);
+  });
+
+  test('4. break staggering never creates a coverage gap: with tight minimum staffing, the chooser avoids a shared break hour even under flat demand', async () => {
+    mockFlatForecastHistory(1000);
+    const store = createFakeStore({
+      // min_staff_per_shift 2 means the operational floor at every hour is 2 — if both closers
+      // broke at the same hour, coverage from just the two of them would still be fine here (a
+      // 3rd/4th employee may also cover), but this pins down that the chooser genuinely reasons
+      // about coverage rather than ignoring it: assert directly on the resulting coverage count.
+      guideline: { target_productivity: 500, min_staff_per_shift: 2, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.start_time === '13:00' && s.end_time === '22:00');
+    expect(closers).toHaveLength(2);
+    const breakHours = closers.map((s) => s.break_start_time);
+    expect(new Set(breakHours).size).toBe(2); // staggered, so at most 1 of the 2 closers is ever on break at once
+    // Coverage from JUST these two closers never drops to 0 during their shared window — the
+    // structural guarantee staggering exists to provide.
+    for (let hour = 16; hour <= 18; hour++) {
+      const onBreakCount = closers.filter((s) => s.break_start_time === `${hour}:00`).length;
+      expect(onBreakCount).toBeLessThan(closers.length);
+    }
+  });
+
+  test('5. Full-time remains exactly 8 working hours + 1h break (9h clock span), regardless of which legal offset the break lands on', async () => {
+    mockShapedForecastHistory(3200, { 13: 20 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    for (const s of store.shifts) {
+      const start = Number(s.start_time.slice(0, 2));
+      const end = Number(s.end_time.slice(0, 2));
+      const breakStart = Number(s.break_start_time.slice(0, 2));
+      const breakEnd = Number(s.break_end_time.slice(0, 2));
+      expect(s.planned_hours).toBe(8); // moving the break never changes total working hours
+      expect(end - start).toBe(9); // clock span always 8 working + 1 break, wherever the break sits
+      expect(breakEnd - breakStart).toBe(1);
+      expect(breakStart - start).toBeGreaterThanOrEqual(3); // legal window: both segments <= 5 consecutive hours
+      expect(breakStart - start).toBeLessThanOrEqual(5);
+    }
+  });
+
+  test('6. Part-time working 5 continuous hours or less still has no break, through the new chooser path', async () => {
+    mockFlatForecastHistory(1000);
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(5) },
+      employees: [makePartTime('PT1')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const shift = store.shifts.find((s) => s.employee_id === 'PT1');
+    expect(shift.planned_hours).toBe(5);
+    expect(shift.break_start_time).toBeNull();
+    expect(shift.break_end_time).toBeNull();
+  });
+
+  test('7. Part-time working more than 5 continuous hours still gets exactly a 1h break, through the new chooser path', async () => {
+    mockFlatForecastHistory(1000);
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(7) },
+      employees: [makePartTime('PT1')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const shift = store.shifts.find((s) => s.employee_id === 'PT1');
+    expect(shift.planned_hours).toBe(7);
+    expect(shift.break_start_time).not.toBeNull();
+    const breakStart = Number(shift.break_start_time.slice(0, 2));
+    const breakEnd = Number(shift.break_end_time.slice(0, 2));
+    expect(breakEnd - breakStart).toBe(1);
+    const start = Number(shift.start_time.slice(0, 2));
+    expect(breakStart - start).toBeGreaterThanOrEqual(2); // legal window for a 7h shift: {2,3,4,5}
+    expect(breakStart - start).toBeLessThanOrEqual(5);
+  });
+
+  // 8-10 (existing daily sales-based day-off logic, existing hourly sales-based manpower logic,
+  // and non-Monday-aligned ranges) are deliberately NOT duplicated here — they're already covered
+  // by "sales-aligned manpower deployment (daily + hourly)" and the "staggering still engages for
+  // a 7-day range that is NOT Monday-aligned" test above, both of which still pass unchanged after
+  // this break-placement change (see the full suite run) — that IS the regression confirmation.
+});
+
+describe('rosterGenerationService.generateDraftRoster — whole-day coverage-curve optimization (Auto Roster redesign)', () => {
+  /** Headcount actually scheduled during [hour, hour+1), excluding anyone on break that hour. */
+  function coverageAt(shifts, hour) {
+    return shifts.filter((s) => {
+      const start = Number(s.start_time.slice(0, 2));
+      const end = Number(s.end_time.slice(0, 2));
+      if (!(start <= hour && hour < end)) return false;
+      if (s.break_start_time && Number(s.break_start_time.slice(0, 2)) === hour) return false;
+      return true;
+    }).length;
+  }
+
+  test('1. low sales at closing retains exactly the minimum closing headcount, never overstaffed just because earlier shifts happened to extend there', async () => {
+    // A sharp midday peak (hour 13) and a genuinely quiet close (hour 21) — a real, non-hardcoded
+    // shape, not "21:00" or "5 people" invented for the test.
+    mockShapedForecastHistory(50000, { 13: 30, 21: 1 });
+    const store = createFakeStore({
+      // A modest daily budget (40h — comfortably above the ~20h mandatory minimum, but not so
+      // enormous that redistributing it proportionally across a real hourly shape alone would
+      // inflate hour 21's ceiling — see Important Change #10's reconciliation, which this budget
+      // is deliberately sized to stay compatible with rather than accidentally trigger.
+      guideline: { target_productivity: 2000, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(40) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), ...Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // Closing (21:00-22:00) never exceeds the mandatory minimum — hour 21's own real forecasted
+    // sales are far too low, under this target_productivity, to justify a 3rd closer.
+    expect(coverageAt(store.shifts, 21)).toBe(2);
+    // The genuinely busy hour, meanwhile, is staffed well above the bare minimum.
+    expect(coverageAt(store.shifts, 13)).toBeGreaterThan(2);
+  });
+
+  test('2. high sales at closing can exceed the minimum when the forecast and productivity genuinely justify it', async () => {
+    mockShapedForecastHistory(50000, { 21: 25 }); // closing hour is now the real peak of the day
+    const store = createFakeStore({
+      guideline: { target_productivity: 300, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(200) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), ...Array.from({ length: 6 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(coverageAt(store.shifts, 21)).toBeGreaterThan(2);
+  });
+
+  test('3. an employee can end before closing when coverage remains sufficient — not everyone is forced to stay until closing', async () => {
+    mockShapedForecastHistory(50000, { 12: 15 }); // a midday peak, well away from closing
+    const store = createFakeStore({
+      // A stricter productivity floor and a modest budget (30h, just above the ~20h mandatory
+      // minimum) so quiet hours genuinely have no room left (ceiling stays at the operational
+      // floor there) while the real midday peak still clearly justifies extra coverage.
+      guideline: { target_productivity: 1500, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(30) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), ...Array.from({ length: 4 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // Any shift that is neither the opener (09:00 start) nor a mandatory closer (22:00 end) is
+    // discretionary Priority-6/7 fill — it must exist here (the midday peak needs more than
+    // mandatory coverage alone) and it must genuinely end before closing, proving the generator
+    // does NOT default every extra shift to running through 22:00.
+    const discretionary = store.shifts.filter((s) => s.start_time !== '09:00' && s.end_time !== '22:00');
+    expect(discretionary.length).toBeGreaterThan(0);
+    for (const s of discretionary) expect(s.end_time < '22:00').toBe(true);
+  });
+
+  test('4. the required closing headcount is preserved together until the store actually closes', async () => {
+    mockShapedForecastHistory(30000, { 10: 10, 20: 8 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 400, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(150) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), ...Array.from({ length: 4 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.end_time === '22:00');
+    expect(closers.length).toBeGreaterThanOrEqual(2);
+    // No hour in the operating window ever drops below 1 person present (the sales-independent
+    // operational floor here) — in particular the run-up to closing is never left with a gap.
+    for (const hour of operatingHourList()) expect(coverageAt(store.shifts, hour)).toBeGreaterThanOrEqual(1);
+  });
+
+  test('5. simultaneous breaks are avoided when they would drop coverage below what is required — several same-window Full-time employees never all break at once', async () => {
+    // Sustained, genuinely high demand across the whole afternoon/evening (not just at closing)
+    // pulls MULTIPLE Full-time employees beyond the 2 mandatory closers into the identical
+    // 13:00-22:00 window (Priority 6/7's Full-time fallback anchors at 13:00, the only clock
+    // position that still ends at closing) — this is the real scenario the break optimizer must
+    // handle: several people sharing one window, all needing a break inside the same {16,17,18}.
+    mockShapedForecastHistory(60000, { 13: 8, 14: 8, 15: 8, 16: 8, 17: 8, 18: 8, 19: 8, 20: 8, 21: 8 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 150, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(120) },
+      employees: Array.from({ length: 5 }, (_, i) => makeEmployee(`FT${i}`)), // Full-time only — no Part-time to divert discretionary fill onto a shorter window
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.start_time === '13:00' && s.end_time === '22:00');
+    expect(closers.length).toBeGreaterThanOrEqual(3); // more than just the 2 mandatory closers
+    // Every hour among their shared legal break window (16:00-18:00) must still have at least
+    // closers.length - 1 of them present (i.e. at most 1 on break there at a time) — the
+    // mandatory 2-person closing floor is never breached by letting more than one break together.
+    for (const hour of [16, 17, 18]) {
+      const onBreakThisHour = closers.filter((s) => s.break_start_time === `${String(hour).padStart(2, '0')}:00`).length;
+      expect(onBreakThisHour).toBeLessThanOrEqual(1);
+    }
+  });
+
+  test('6. a break avoids a real peak-sales hour when a legal, lower-sales alternative exists, even with several same-window employees', async () => {
+    // Within the shared legal break window (offsets 3-5 from a 13:00 start -> hours 16,17,18),
+    // hour 17 is a real, pronounced sales peak; 16 and 18 are comparatively quiet. Needs at least
+    // 3 employees (1 opener + 2 closers) for the 2 mandatory closers to both actually materialize.
+    mockShapedForecastHistory(30000, { 17: 25 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 400, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(100) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closers = store.shifts.filter((s) => s.start_time === '13:00' && s.end_time === '22:00');
+    expect(closers.length).toBe(2);
+    for (const s of closers) expect(s.break_start_time).not.toBe('17:00');
+  });
+
+  test('7. Full-time is used before Part-time whenever Full-time can still cover demand', async () => {
+    mockShapedForecastHistory(20000, { 14: 8 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 400, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(80) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3'), makeEmployee('FT4'), makePartTime('PT0'), makePartTime('PT1')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const ftHours = store.shifts.filter((s) => s.employee_id.startsWith('FT')).reduce((sum, s) => sum + Number(s.planned_hours), 0);
+    const ptHours = store.shifts.filter((s) => s.employee_id.startsWith('PT')).reduce((sum, s) => sum + Number(s.planned_hours), 0);
+    expect(ftHours).toBeGreaterThan(ptHours);
+  });
+
+  test('8. Part-time can be exactly 0 on a day when Full-time alone already satisfies both mandatory coverage and real demand', async () => {
+    mockFlatForecastHistory(1000); // modest, flat demand
+    const store = createFakeStore({
+      guideline: { target_productivity: 5000, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(24) }, // productivity floor this high justifies nothing beyond the operational minimum
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makeEmployee('FT3'), makePartTime('PT0'), makePartTime('PT1')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // Opener + 2 closers exactly matches the 3 Full-time employees available; nothing about real
+    // demand justifies reaching into the Part-time pool at all.
+    expect(store.shifts.filter((s) => s.employee_id.startsWith('PT')).length).toBe(0);
+  });
+
+  test('9. the monthly guideline is a ceiling, never a target — a remaining guideline surplus never causes the generator to add people without real demand', async () => {
+    mockFlatForecastHistory(1000);
+    const store = createFakeStore({
+      // A daily budget (25h) genuinely larger than the ~20h mandatory coverage alone requires —
+      // a real, modest surplus (not an extreme mismatch that would itself distort the hourly
+      // ceiling via the guideline-share reconciliation kept from Important Change #10) — under
+      // this flat, unremarkable demand + a strict productivity floor, neither real-sales signal
+      // justifies spending that surplus.
+      guideline: { target_productivity: 5000, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(25) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), ...Array.from({ length: 5 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    // Mandatory coverage alone (opener + 2 demand-fitted closers) — nowhere near the guideline.
+    expect(result.totalLaborHours).toBeLessThan(30);
+  });
+
+  test('10. hourly manpower follows the real hourly sales curve across several consecutive hours, rising into a peak and falling back out of it', async () => {
+    mockShapedForecastHistory(40000, { 12: 10, 13: 14, 14: 10 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 350, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(150) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), ...Array.from({ length: 5 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const c11 = coverageAt(store.shifts, 11);
+    const c13 = coverageAt(store.shifts, 13);
+    const c15 = coverageAt(store.shifts, 15);
+    expect(c13).toBeGreaterThan(c11); // rises into the peak
+    expect(c13).toBeGreaterThan(c15); // falls back out of it afterward
+  });
+
+  test('11. day-off staggering and hourly demand-curve fitting both still hold together over a non-Monday-aligned range', async () => {
+    mockShapedForecastHistory(30000, { 13: 12 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 400, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(100) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT0'), makePartTime('PT1')],
+    });
+
+    // Starts on a Wednesday, not Monday — the exact case that used to silently defeat staggering.
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-26', endDate: '2026-09-01' });
+
+    const daysOffByEmployee = new Map();
+    for (const empId of ['FT1', 'FT2']) {
+      const workedDates = new Set(store.shifts.filter((s) => s.employee_id === empId).map((s) => s.shift_date));
+      const allDates = [];
+      for (let d = new Date('2026-08-26T00:00:00Z'); d <= new Date('2026-09-01T00:00:00Z'); d = new Date(d.getTime() + 86400000)) {
+        allDates.push(d.toISOString().slice(0, 10));
+      }
+      daysOffByEmployee.set(empId, allDates.filter((d) => !workedDates.has(d)));
+    }
+    // Each Full-time employee still gets a real day off within this 7-day, non-Monday-aligned range...
+    expect(daysOffByEmployee.get('FT1').length).toBeGreaterThanOrEqual(1);
+    expect(daysOffByEmployee.get('FT2').length).toBeGreaterThanOrEqual(1);
+    // ...and the hourly curve-fitting logic is still demand-driven on a normal day within it: the
+    // peak hour (13:00) is staffed at least as heavily as a quiet baseline hour (09:00).
+    const peakDay = store.shifts.filter((s) => s.shift_date === '2026-08-27');
+    expect(coverageAt(peakDay, 13)).toBeGreaterThanOrEqual(coverageAt(peakDay, 9));
+  });
+
+  test('12. Full-time legal constraints (8h + 1h break, <=48h/week, <=6 consecutive days) still hold under the new demand-fitted algorithm', async () => {
+    mockShapedForecastHistory(30000, { 13: 12, 19: 6 });
+    const store = createFakeStore({
+      guideline: { target_productivity: 350, min_staff_per_shift: 1, monthly_labor_hours: dailyBudgetViaMonthlyGuideline(150) },
+      employees: [makeEmployee('FT1'), makeEmployee('FT2'), makePartTime('PT0'), makePartTime('PT1'), makePartTime('PT2')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-09-06' }); // 2 full weeks
+
+    const byWeek = new Map();
+    for (const s of store.shifts.filter((s) => s.employee_id === 'FT1' || s.employee_id === 'FT2')) {
+      const key = `${s.employee_id}-${s.shift_date.slice(0, 7)}-w${Math.floor((new Date(s.shift_date).getUTCDate() - 1) / 7)}`;
+      byWeek.set(key, (byWeek.get(key) || 0) + Number(s.planned_hours));
+      expect(s.planned_hours).toBe(8); // FT working hours are always exactly 8, regardless of demand shape
+      const start = Number(s.start_time.slice(0, 2));
+      const breakStart = Number(s.break_start_time.slice(0, 2));
+      expect(breakStart - start).toBeGreaterThanOrEqual(3); // legal window for 8h: offsets {3,4,5}
+      expect(breakStart - start).toBeLessThanOrEqual(5);
+    }
+    for (const hours of byWeek.values()) expect(hours).toBeLessThanOrEqual(48);
+
+    const worked = new Set(store.shifts.filter((s) => s.employee_id === 'FT1').map((s) => s.shift_date));
+    expect(maxConsecutiveRun([...worked].sort())).toBeLessThanOrEqual(6);
   });
 });

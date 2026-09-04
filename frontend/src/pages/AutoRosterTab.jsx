@@ -293,12 +293,6 @@ export default function AutoRosterTab() {
           </div>
         }
       >
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>
-          Test/visualization only — calls the real <code>POST /api/roster/auto-generate</code> and renders exactly
-          what the backend returns. No scheduling rules run in the browser. If a roster already exists for this
-          store and date range, <b>Auto Generate</b> only loads and displays it — it never overwrites. Only{" "}
-          <b>Regenerate</b> (with confirmation) replaces existing shifts.
-        </div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
           <input
             placeholder="Store ID (e.g. 1001)"
@@ -330,11 +324,6 @@ export default function AutoRosterTab() {
         )}
 
         {error && <div style={{ color: "#dc2626", fontSize: 12, marginTop: 10 }}>{error}</div>}
-        {rosterStatus === "existing" && !error && (
-          <div style={{ color: "#0369a1", fontSize: 12, marginTop: 10 }}>
-            Found {shifts.length} existing shift(s) for this range — showing the roster already on file.
-          </div>
-        )}
         {rosterStatus === "generated" && result && !error && (
           <div style={{ color: "#16a34a", fontSize: 12, marginTop: 10 }}>
             Generated {result.generatedShifts} shift(s), {result.totalLaborHours}h total labor, validation status: {result.validation?.status}.
@@ -355,12 +344,6 @@ export default function AutoRosterTab() {
             />
           }
         >
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 14 }}>
-            Monthly Sales (SUM of <code>sales_report.gross_actual</code> for the month) mapped through the
-            Sales → Monthly Labor Hours business table. This is a planning ceiling only — Auto Generate
-            optimizes to actual demand and never pads shifts to fill it. Changing the month only re-fetches;
-            it never regenerates the roster.
-          </div>
           {overviewLoading && <div style={{ fontSize: 12, color: "#94a3b8" }}>Loading...</div>}
           {overviewError && <div style={{ color: "#dc2626", fontSize: 12, marginBottom: 10 }}>{overviewError}</div>}
           {monthlyOverview && !overviewLoading && (() => {

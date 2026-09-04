@@ -57,6 +57,25 @@ function partTimeClockSpanHours(workingHours) {
   return workingHours + (workingHours > PART_TIME_BREAK_THRESHOLD_HOURS ? PART_TIME_BREAK_HOURS : 0);
 }
 
+/**
+ * Every legally valid "first working segment length" (in hours) for a shift of `workingHours`
+ * that has a break: the Labour Protection Act's "no more than 5 consecutive working hours"
+ * applies to BOTH segments a break splits the shift into, not just the one before it — so a
+ * segment of k hours is valid only when k <= 5 AND the remaining (workingHours - k) is also
+ * <= 5. This is deliberately NOT a single fixed offset (e.g. always "after 4 hours") — that was
+ * one arbitrary, always-compliant choice among several; returning the whole valid range lets a
+ * caller pick WHICH compliant offset best fits real hourly sales / avoids simultaneous breaks,
+ * without ever risking a non-compliant one. Called only for shift lengths that actually require
+ * a break (Full-time's fixed 8h; Part-time only when > PART_TIME_BREAK_THRESHOLD_HOURS).
+ */
+function validBreakOffsets(workingHours) {
+  const minK = Math.max(1, workingHours - PART_TIME_BREAK_THRESHOLD_HOURS);
+  const maxK = Math.min(PART_TIME_BREAK_THRESHOLD_HOURS, workingHours - 1);
+  const offsets = [];
+  for (let k = minK; k <= maxK; k++) offsets.push(k);
+  return offsets;
+}
+
 function employeeShiftType(employee) {
   const t = (employee.position_time_type || '').trim().toLowerCase();
   if (t.startsWith('full')) return 'FULL_TIME';
@@ -76,5 +95,6 @@ module.exports = {
   DEFAULT_WEEKLY_HOURS,
   weeklyCapFor,
   partTimeClockSpanHours,
+  validBreakOffsets,
   employeeShiftType,
 };
