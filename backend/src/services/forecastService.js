@@ -100,9 +100,11 @@ async function generateForecast({ storeId, days = 7, method = 'SMA', lookbackDay
 //
 // dailyForecast(date) — a weekday-aware total for the day, built from
 // sales_report.gross_actual (the only table with true per-day granularity):
-//   1. Same store + same weekday average, if at least MIN_WEEKDAY_SAMPLES
-//      historical occurrences of that weekday exist.
-//   2. Otherwise, the store's overall daily average across all history.
+//   1. Same store + same weekday, recency-weighted average, if at least MIN_WEEKDAY_SAMPLES
+//      historical occurrences of that weekday exist — more recent occurrences count more (see
+//      RECENCY_HALF_LIFE_SAMPLES below), so a genuine recent shift is picked up without a handful
+//      of old samples permanently outvoting it, while still using the full history available.
+//   2. Otherwise, the store's overall daily average across all history (plain, unweighted).
 //   3. Otherwise (no history at all for the store), 0 — reported as
 //      NO_HISTORY so the caller can see the forecast is not grounded in data.
 //
@@ -130,8 +132,40 @@ async function generateForecast({ storeId, days = 7, method = 'SMA', lookbackDay
 
 const MIN_WEEKDAY_SAMPLES = 2;
 
+// Recency weighting for the STORE_WEEKDAY_AVERAGE tier only — STORE_DAILY_AVERAGE and NO_HISTORY
+// stay plain, unweighted fallbacks (see computeDailyForecast). Same-weekday samples are inherently
+// weekly-spaced (each one is ~7 days after the previous), so "occurrences back" and "days back" are
+// equivalent up to a constant factor here; ranking by occurrence rather than calendar days keeps
+// this immune to irregular gaps (e.g. an unreported week just doesn't shift the ranking of the
+// samples that do exist).
+//
+// RECENCY_HALF_LIFE_SAMPLES = 8 (~2 months, since one same-weekday sample lands per week): a
+// same-weekday sample 8 occurrences older than the most recent one carries half its weight.
+// Grounded in the real data (574 stores, checked directly): the median store has 180 days of
+// history and 26 same-weekday samples. At n=26, the oldest sample's weight is
+// 0.5^(25/8) ≈ 0.10 — meaningfully discounted (the most recent ~2 months dominates) but never
+// zeroed out, so the other ~4 months of real signal still contributes. At the MIN_WEEKDAY_SAMPLES
+// floor (n=2) the two weights are 1.0 and 0.5^(1/8) ≈ 0.917 — barely different, so with few
+// samples this degrades gracefully to ~a plain average: the same formula that gives real recency
+// preference at n=26 self-moderates at n=2, with no extra special-casing needed.
+const RECENCY_HALF_LIFE_SAMPLES = 8;
+const RECENCY_DECAY_RATE = Math.pow(0.5, 1 / RECENCY_HALF_LIFE_SAMPLES);
+
 function average(values) {
   return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
+}
+
+/** Weighted average of `rows` (each needs report_date + gross_actual), weighting more recent report_dates more heavily via RECENCY_DECAY_RATE — see the comment above. */
+function recencyWeightedAverage(rows) {
+  const sorted = [...rows].sort((a, b) => (a.report_date < b.report_date ? 1 : -1)); // most recent first
+  let weightedSum = 0;
+  let weightTotal = 0;
+  sorted.forEach((row, rank) => {
+    const weight = RECENCY_DECAY_RATE ** rank;
+    weightedSum += Number(row.gross_actual) * weight;
+    weightTotal += weight;
+  });
+  return weightTotal > 0 ? weightedSum / weightTotal : 0;
 }
 
 /**
@@ -148,7 +182,7 @@ function computeDailyForecast(dailyHistory, targetDate) {
 
   if (sameWeekday.length >= MIN_WEEKDAY_SAMPLES) {
     return {
-      value: average(sameWeekday.map((h) => Number(h.gross_actual))),
+      value: recencyWeightedAverage(sameWeekday),
       source: 'STORE_WEEKDAY_AVERAGE',
       samples: sameWeekday.length,
     };

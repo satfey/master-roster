@@ -59,18 +59,21 @@ describe('forecastController.previewDailyForecast', () => {
 
   test('a valid request returns one entry per date, computed via the real computeDailyForecast', async () => {
     forecastRepo.findDailySalesHistory.mockResolvedValue([
-      { report_date: '2026-09-24', gross_actual: 10000 }, // a Thursday
-      { report_date: '2026-09-17', gross_actual: 12000 }, // a Thursday
+      { report_date: '2026-09-24', gross_actual: 10000 }, // a Thursday, more recent
+      { report_date: '2026-09-17', gross_actual: 12000 }, // a Thursday, older
     ]);
     const res = makeRes();
 
     await previewDailyForecast({ query: { storeId: '1001', startDate: '2026-10-01', endDate: '2026-10-01' } }, res); // also a Thursday
 
     expect(res.status).not.toHaveBeenCalledWith(400);
+    // 10,957, not the plain average (11,000) — computeDailyForecast recency-weights the
+    // STORE_WEEKDAY_AVERAGE tier (RECENCY_HALF_LIFE_SAMPLES=8 in forecastService.js), so the more
+    // recent 10,000 counts slightly more than the older 12,000.
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         success: true,
-        data: { storeId: '1001', days: [{ date: '2026-10-01', forecastedSales: 11000, source: 'STORE_WEEKDAY_AVERAGE', samples: 2 }] },
+        data: { storeId: '1001', days: [{ date: '2026-10-01', forecastedSales: 10957, source: 'STORE_WEEKDAY_AVERAGE', samples: 2 }] },
       })
     );
     expect(forecastRepo.findDailySalesHistory).toHaveBeenCalledWith('1001', { before: '2026-10-01' });
