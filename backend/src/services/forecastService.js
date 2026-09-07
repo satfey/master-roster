@@ -134,10 +134,17 @@ function average(values) {
   return values.length ? values.reduce((a, b) => a + b, 0) / values.length : 0;
 }
 
-/** Weekday-aware daily total forecast for one date, from sales_report history (see fallback hierarchy above). */
+/**
+ * Weekday-aware daily total forecast for one date, from sales_report history (see fallback
+ * hierarchy above). `gross_actual` is null for a date that simply hasn't been reported yet (data
+ * entry lag — never means "zero sales"), so those rows are excluded up front: including them
+ * would silently average in a phantom 0 (Number(null) === 0) for every not-yet-reported day, and
+ * would also inflate `samples`/the MIN_WEEKDAY_SAMPLES check with days that carry no real signal.
+ */
 function computeDailyForecast(dailyHistory, targetDate) {
+  const reported = dailyHistory.filter((h) => h.gross_actual != null);
   const weekday = weekdayOf(targetDate);
-  const sameWeekday = dailyHistory.filter((h) => weekdayOf(h.report_date) === weekday);
+  const sameWeekday = reported.filter((h) => weekdayOf(h.report_date) === weekday);
 
   if (sameWeekday.length >= MIN_WEEKDAY_SAMPLES) {
     return {
@@ -146,11 +153,11 @@ function computeDailyForecast(dailyHistory, targetDate) {
       samples: sameWeekday.length,
     };
   }
-  if (dailyHistory.length > 0) {
+  if (reported.length > 0) {
     return {
-      value: average(dailyHistory.map((h) => Number(h.gross_actual))),
+      value: average(reported.map((h) => Number(h.gross_actual))),
       source: 'STORE_DAILY_AVERAGE',
-      samples: dailyHistory.length,
+      samples: reported.length,
     };
   }
   return { value: 0, source: 'NO_HISTORY', samples: 0 };

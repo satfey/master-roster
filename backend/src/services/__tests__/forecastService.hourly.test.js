@@ -89,6 +89,33 @@ describe('forecastService.generateHourlyForecast', () => {
     expect(result.days[0].hours.every((h) => h.forecastedSales === 0)).toBe(true);
   });
 
+  test('4b. an unreported day (gross_actual: null) is excluded from the weekday average, not counted as 0 sales', async () => {
+    // 3 real Monday reports of 10,000, plus 1 not-yet-entered Monday (null) — averaging the null in
+    // as 0 would drag this down to 7,500; the real signal is 10,000.
+    const rows = dailyRowsForWeekday(1, 10000, 4);
+    rows[0].gross_actual = null; // the most recent Monday hasn't been reported yet
+    repo.findDailySalesHistory.mockResolvedValue(rows);
+    repo.findHourlySalesHistory.mockResolvedValue([{ report_month: '2026-07-01', hour: 12, gross_sale: 1000 }]);
+
+    const result = await generateHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-03' }); // a Monday
+
+    expect(result.days[0].dailyForecastSource).toBe('STORE_WEEKDAY_AVERAGE');
+    expect(result.days[0].dailyForecast).toBe(10000); // not 7,500
+  });
+
+  test('4c. unreported days do not count toward the same-weekday sample threshold — a weekday with only 1 real report (plus nulls) falls back to the daily average, not a phantom weekday average', async () => {
+    const rows = dailyRowsForWeekday(1, 10000, 3); // 3 Mondays
+    rows[0].gross_actual = null;
+    rows[1].gross_actual = null; // only 1 REAL Monday sample remains — below MIN_WEEKDAY_SAMPLES (2)
+    repo.findDailySalesHistory.mockResolvedValue(rows);
+    repo.findHourlySalesHistory.mockResolvedValue([{ report_month: '2026-07-01', hour: 12, gross_sale: 1000 }]);
+
+    const result = await generateHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-03' });
+
+    expect(result.days[0].dailyForecastSource).toBe('STORE_DAILY_AVERAGE');
+    expect(result.days[0].dailyForecast).toBe(10000); // the one real reported row, not diluted by the 2 nulls
+  });
+
   test('a store with no hourly history of its own falls back to the chain-wide shape', async () => {
     repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
     repo.findHourlySalesHistory.mockResolvedValue([]); // no history for this store
