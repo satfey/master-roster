@@ -19,6 +19,13 @@ async function createHourlyForecast(req, res) {
   return success(res, result, 'Hourly forecast generated');
 }
 
+/** True for a real calendar date in exactly 'YYYY-MM-DD' form — rejects both malformed strings and ones that merely match the shape (e.g. '2026-02-30'), by round-tripping through Date and requiring an exact match back. */
+function isValidISODate(value) {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const d = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(d.getTime()) && d.toISOString().slice(0, 10) === value;
+}
+
 /**
  * Read-only daily forecast preview — computes computeDailyForecast on the fly from real
  * sales_report history and returns it directly, WITHOUT calling generateHourlyForecast's
@@ -33,6 +40,12 @@ async function previewDailyForecast(req, res) {
   const { storeId, startDate, endDate } = req.query;
   if (!storeId) return failure(res, 'storeId is required', 400);
   if (!startDate || !endDate) return failure(res, 'startDate and endDate are required', 400);
+  // Without this, a non-date string that merely sorts before another (e.g. 'aaa' < 'zzz') slips
+  // past the ordering check below and reaches the database as a raw SQL date literal, surfacing
+  // the driver's own error (a 500 with a raw Postgres message) instead of a clean 400.
+  if (!isValidISODate(startDate) || !isValidISODate(endDate)) {
+    return failure(res, 'startDate and endDate must be valid dates in YYYY-MM-DD format', 400);
+  }
   if (startDate > endDate) return failure(res, 'startDate must not be after endDate', 400);
 
   const history = await forecastRepo.findDailySalesHistory(storeId, { before: startDate });
