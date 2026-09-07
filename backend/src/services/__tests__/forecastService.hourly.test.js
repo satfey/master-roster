@@ -382,3 +382,199 @@ describe('forecastService.computeDailyForecast — bounded recency weighting on 
     expect(Math.abs(sumOfHours - day.dailyForecast)).toBeLessThanOrEqual(1); // still sums back within independent per-hour rounding, per the existing invariant
   });
 });
+
+describe('forecastService.computeDailyForecast — bounded momentum (Bounded Hybrid, validated offline: HL8 MAPE 19.85% -> 18.75%, window=4, cap=10%)', () => {
+  const HALF_LIFE = 8;
+  const MOMENTUM_WINDOW = 4;
+  const MOMENTUM_CAP = 0.1;
+
+  /** Mirrors forecastService's recencyWeightedAverage exactly, reconstructed independently here (not imported) so this test locks in the documented parameters. */
+  function expectedBaseline(valuesNewestFirst) {
+    const decay = Math.pow(0.5, 1 / HALF_LIFE);
+    let wSum = 0, wTotal = 0;
+    valuesNewestFirst.forEach((v, rank) => { const w = decay ** rank; wSum += v * w; wTotal += w; });
+    return wSum / wTotal;
+  }
+  /** Mirrors forecastService's boundedMomentum exactly, reconstructed independently. */
+  function expectedMomentum(valuesNewestFirst) {
+    if (valuesNewestFirst.length < MOMENTUM_WINDOW * 2) return 0;
+    const recent = valuesNewestFirst.slice(0, MOMENTUM_WINDOW);
+    const older = valuesNewestFirst.slice(MOMENTUM_WINDOW, MOMENTUM_WINDOW * 2);
+    const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
+    const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
+    if (olderAvg <= 0) return 0;
+    const ratio = recentAvg / olderAvg - 1;
+    return Math.max(-MOMENTUM_CAP, Math.min(MOMENTUM_CAP, ratio));
+  }
+  function expectedValue(valuesNewestFirst) {
+    return Math.max(0, expectedBaseline(valuesNewestFirst) * (1 + expectedMomentum(valuesNewestFirst)));
+  }
+
+  /** rows[0] is newest, 7 days apart, landing on `mostRecentDate` (which must actually be `weekday`). */
+  function weekdayRowsWithValues(weekday, mostRecentDate, valuesNewestFirst) {
+    const rows = [];
+    let cursor = new Date(`${mostRecentDate}T00:00:00Z`);
+    if (cursor.getUTCDay() !== weekday) throw new Error('mostRecentDate is not the expected weekday — fix the test fixture');
+    for (const value of valuesNewestFirst) {
+      rows.push({ report_date: cursor.toISOString().slice(0, 10), gross_actual: value });
+      cursor = new Date(cursor.getTime() - 7 * 86400000);
+    }
+    return rows;
+  }
+
+  // 1. Exact 4+4 sample momentum calculation (moderate 5% shift, well inside the cap).
+  test('1. exact 4+4 momentum calculation applied on top of the HL8 baseline', () => {
+    const values = [10500, 10500, 10500, 10500, 10000, 10000, 10000, 10000]; // newest 4 first
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+
+    expect(result.source).toBe('STORE_WEEKDAY_AVERAGE');
+    expect(result.value).toBeCloseTo(expectedValue(values), 2);
+    expect(expectedMomentum(values)).toBeCloseTo(0.05, 5); // sanity: this fixture is genuinely a 5% shift, not accidentally clamped
+  });
+
+  // 2. Positive momentum: recent 4 higher than the preceding 4 -> forecast pulled ABOVE the plain HL8 baseline.
+  test('2. positive momentum (rising) pulls the forecast above the HL8 baseline alone', () => {
+    const values = [11000, 11000, 11000, 11000, 10000, 10000, 10000, 10000];
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+    const baselineAlone = expectedBaseline(values);
+
+    expect(result.value).toBeGreaterThan(baselineAlone);
+    expect(result.value).toBeCloseTo(expectedValue(values), 2);
+  });
+
+  // 3. Negative momentum: recent 4 lower than the preceding 4 -> forecast pulled BELOW the plain HL8 baseline.
+  test('3. negative momentum (declining) pulls the forecast below the HL8 baseline alone', () => {
+    const values = [9000, 9000, 9000, 9000, 10000, 10000, 10000, 10000];
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+    const baselineAlone = expectedBaseline(values);
+
+    expect(result.value).toBeLessThan(baselineAlone);
+    expect(result.value).toBeCloseTo(expectedValue(values), 2);
+  });
+
+  // 4. +10% cap: a much larger rise (recent 4 = 2x older 4, i.e. +100% raw) is clamped to exactly +10%.
+  test('4. a large rise is clamped to exactly +10%, not the raw (much larger) ratio', () => {
+    const values = [20000, 20000, 20000, 20000, 10000, 10000, 10000, 10000]; // raw ratio would be +100%
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+    const baselineAlone = expectedBaseline(values);
+
+    expect(result.value).toBeCloseTo(baselineAlone * 1.1, 2); // capped at +10%, never the raw +100%
+  });
+
+  // 5. -10% cap: a much larger decline (recent 4 = half of older 4, i.e. -50% raw) is clamped to exactly -10%.
+  test('5. a large decline is clamped to exactly -10%, not the raw (much larger) ratio', () => {
+    const values = [5000, 5000, 5000, 5000, 10000, 10000, 10000, 10000]; // raw ratio would be -50%
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+    const baselineAlone = expectedBaseline(values);
+
+    expect(result.value).toBeCloseTo(baselineAlone * 0.9, 2); // capped at -10%, never the raw -50%
+  });
+
+  // 6. Fewer than 8 same-weekday samples -> exactly the unchanged HL8 baseline (momentum never activates).
+  test('6. with only 7 same-weekday samples, the forecast is EXACTLY the HL8 baseline — momentum does not activate', () => {
+    const values = [20000, 5000, 5000, 5000, 10000, 10000, 10000]; // 7 samples, a big swing that WOULD trigger a large momentum if it activated
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+
+    expect(result.value).toBeCloseTo(expectedBaseline(values), 6); // exact match to the plain recency-weighted baseline, no adjustment at all
+  });
+
+  // 7. Null exclusion: an unreported same-weekday sample must not count toward the 8-sample threshold, nor be included in either momentum window.
+  test('7. an unreported (null) same-weekday sample is excluded from momentum entirely, including from the 8-sample threshold', () => {
+    const values = [10500, 10500, 10500, 10500, 10000, 10000, 10000, 10000]; // 8 real samples -> momentum would activate
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+    history[2].gross_actual = null; // knock one of the "recent 4" out -> only 7 REAL same-weekday samples remain
+
+    const result = computeDailyForecast(history, '2026-08-10');
+    const realValues = values.filter((_, i) => i !== 2); // the same 7 real values, in the same newest-first order
+
+    expect(result.samples).toBe(7);
+    expect(result.value).toBeCloseTo(expectedBaseline(realValues), 6); // falls back to exactly the (7-sample) HL8 baseline, matching test 6's behavior
+  });
+
+  // 8. Zero/invalid history handling: a genuinely reported zero-sales day is a REAL data point (included, same as the existing average/recencyWeightedAverage convention) — only an all-zero OLDER window (a degenerate ratio) disables the adjustment.
+  test('8a. a genuinely reported zero-sales day counts as a real sample, consistent with existing averaging behavior', () => {
+    const values = [10000, 10000, 10000, 10000, 0, 10000, 10000, 10000]; // one real reported zero in the older window
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+
+    expect(result.samples).toBe(8); // the zero counts as a real sample, not excluded like null
+    expect(result.value).toBeCloseTo(expectedValue(values), 2);
+  });
+
+  test('8b. an older window that averages to exactly 0 disables the adjustment (no division by zero / NaN / Infinity)', () => {
+    const values = [10000, 10000, 10000, 10000, 0, 0, 0, 0]; // older window average = 0 -> degenerate ratio, guarded
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+
+    expect(Number.isFinite(result.value)).toBe(true);
+    expect(result.value).toBeCloseTo(expectedBaseline(values), 6); // momentum falls back to 0 -> exactly the HL8 baseline
+  });
+
+  // 9. Forecast is never negative, even at the boundary (small baseline, -10% cap applied).
+  test('9. the forecast never goes negative, even with a small baseline and the -10% cap applied', () => {
+    const values = [90, 90, 90, 90, 100, 100, 100, 100];
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+
+    expect(result.value).toBeGreaterThanOrEqual(0);
+    expect(result.value).toBeCloseTo(expectedValue(values), 2);
+  });
+
+  // 10. No recursive accumulation: computeDailyForecast is pure — calling it twice with the SAME real
+  // history (never including any of its own prior output) gives the identical result both times.
+  test('10. calling computeDailyForecast repeatedly with the same real history never accumulates — always the same result', () => {
+    const values = [11000, 11000, 11000, 11000, 10000, 10000, 10000, 10000];
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const first = computeDailyForecast(history, '2026-08-10');
+    const second = computeDailyForecast(history, '2026-08-10');
+    const third = computeDailyForecast(history, '2026-08-10');
+
+    expect(second.value).toBe(first.value);
+    expect(third.value).toBe(first.value);
+    // and the input history array itself is never mutated by the call (no hidden state written back into it)
+    expect(history).toHaveLength(8);
+    expect(history[0].gross_actual).toBe(11000);
+  });
+
+  // 11. Existing HL8 behavior unchanged when momentum is neutral (recent 4 average === older 4 average).
+  test('11. when the recent and older windows average to the same value, momentum is exactly 0 — identical to the plain HL8 baseline', () => {
+    const values = [9000, 11000, 10000, 10000, 10000, 10000, 11000, 9000]; // both windows average to 10000
+    const history = weekdayRowsWithValues(1, '2026-08-03', values);
+
+    const result = computeDailyForecast(history, '2026-08-10');
+
+    expect(expectedMomentum(values)).toBe(0);
+    expect(result.value).toBeCloseTo(expectedBaseline(values), 6);
+  });
+
+  // 12. Existing fallback behavior (STORE_DAILY_AVERAGE, NO_HISTORY) is completely untouched by this change.
+  test('12. STORE_DAILY_AVERAGE and NO_HISTORY fallbacks are unaffected — momentum only ever applies inside the weekday tier', () => {
+    // Below MIN_WEEKDAY_SAMPLES (2) for the target weekday -> falls to STORE_DAILY_AVERAGE, a plain average, regardless of how much momentum-like variation exists in the (irrelevant) other-weekday history.
+    const history = [
+      { report_date: '2026-08-04', gross_actual: 5000 }, // a Tuesday
+      { report_date: '2026-08-11', gross_actual: 20000 }, // a Tuesday — big swing, but irrelevant since we're forecasting a Monday
+    ];
+    const dailyAvgResult = computeDailyForecast(history, '2026-08-17'); // a Monday — 0 same-weekday samples
+    expect(dailyAvgResult.source).toBe('STORE_DAILY_AVERAGE');
+    expect(dailyAvgResult.value).toBe(12500); // plain (5000+20000)/2, no momentum logic involved at all
+
+    const noHistoryResult = computeDailyForecast([], '2026-08-17');
+    expect(noHistoryResult).toEqual({ value: 0, source: 'NO_HISTORY', samples: 0 });
+  });
+});
