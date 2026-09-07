@@ -143,9 +143,65 @@ const { storeScope } = require('../middleware/storeScope');
  *         $ref: '#/components/responses/ForbiddenError'
  *       500:
  *         $ref: '#/components/responses/ServerError'
+ * /forecast/preview:
+ *   get:
+ *     summary: Preview a store's real daily sales forecast without persisting anything
+ *     description: >
+ *       Same weekday-average logic as POST /forecast/hourly's dailyForecast step
+ *       (computeDailyForecast against real sales_report history), but read-only — no
+ *       forecast_model_run row and no sales_forecast upsert. Intended for display
+ *       (charts, exploration) where the forecast may be viewed repeatedly; use
+ *       POST /forecast/hourly instead when the result needs to be durable and tied to a
+ *       model run (e.g. actually generating a roster from it).
+ *     tags: [Forecast]
+ *     parameters:
+ *       - in: query
+ *         name: storeId
+ *         required: true
+ *         schema: { type: string, example: '1001' }
+ *       - in: query
+ *         name: startDate
+ *         required: true
+ *         schema: { type: string, format: date, example: '2026-10-01' }
+ *       - in: query
+ *         name: endDate
+ *         required: true
+ *         schema: { type: string, format: date, example: '2026-10-30' }
+ *     responses:
+ *       200:
+ *         description: Daily forecast preview
+ *         content:
+ *           application/json:
+ *             schema:
+ *               allOf:
+ *                 - $ref: '#/components/schemas/ApiResponse'
+ *                 - type: object
+ *                   properties:
+ *                     data:
+ *                       type: object
+ *                       properties:
+ *                         storeId: { type: string }
+ *                         days:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               date: { type: string, format: date }
+ *                               forecastedSales: { type: number }
+ *                               source: { type: string, enum: [STORE_WEEKDAY_AVERAGE, STORE_DAILY_AVERAGE, NO_HISTORY] }
+ *                               samples: { type: integer }
+ *       400:
+ *         $ref: '#/components/responses/BadRequestError'
+ *       401:
+ *         $ref: '#/components/responses/UnauthorizedError'
+ *       403:
+ *         $ref: '#/components/responses/ForbiddenError'
+ *       500:
+ *         $ref: '#/components/responses/ServerError'
  */
 router.post('/', authenticate, authorize('forecast:generate'), storeScope, forecastController.createForecast);
 router.get('/', authenticate, authorize('forecast:view'), storeScope, forecastController.getForecast);
+router.get('/preview', authenticate, authorize('forecast:view'), storeScope, forecastController.previewDailyForecast);
 router.post('/hourly', authenticate, authorize('forecast:generate'), storeScope, forecastController.createHourlyForecast);
 
 module.exports = router;

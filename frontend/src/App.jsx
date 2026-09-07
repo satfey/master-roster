@@ -1,13 +1,15 @@
 import React, { useState, useEffect } from "react";
-import { Store, Wand2, UploadCloud } from "lucide-react";
+import { Store, Wand2, UploadCloud, TrendingUp } from "lucide-react";
 import { isAuthenticated, fetchCurrentUser, logout, onUnauthorized } from "./lib/auth.js";
 
 import LoginPage from "./pages/LoginPage.jsx";
 import AutoRosterTab from "./pages/AutoRosterTab.jsx";
 import UploadExcelTab from "./pages/UploadExcelTab.jsx";
+import SalesForecastTab from "./pages/SalesForecastTab.jsx";
 
 const TABS = [
   { key: "autoRoster", label: "Auto Generate Roster", icon: Wand2 },
+  { key: "forecast", label: "Sales Forecast", icon: TrendingUp },
   { key: "upload", label: "Upload Excel", icon: UploadCloud },
 ];
 
@@ -93,6 +95,7 @@ export default function App() {
 
       <div style={{ padding: "20px 22px", maxWidth: 1180, margin: "0 auto" }}>
         {activeTab === "autoRoster" && <AutoRosterTab />}
+        {activeTab === "forecast" && <SalesForecastTab />}
         {activeTab === "upload" && <UploadExcelTab />}
       </div>
     </div>
