@@ -114,14 +114,29 @@ async function generateForecast({ storeId, days = 7, method = 'SMA', lookbackDay
 //
 // hourFraction(hour) — what share of a day's sales typically lands in each
 // operating hour, built from sales_by_hour.gross_sale. sales_by_hour is
-// aggregated per (store, calendar month, hour) — it has no per-date
-// granularity, so it cannot itself supply a same-weekday effect; that's why
-// weekday seasonality is applied via the daily total above instead, and this
-// shape is a store-level "typical hour-of-day curve":
-//   1. The store's own hour totals, summed across every available month and
-//      normalized to sum to 1 (restricted to operating hours — any sales
-//      recorded outside 09:00-22:00 are excluded from the shape as
-//      out-of-hours anomalies rather than silently redistributed).
+// aggregated per (store, calendar month, hour) — it has no per-date or
+// weekday column, in the schema OR the source Excel report (confirmed
+// against salesByHourImport/excelParser.js: the file itself is 5 fixed
+// columns — Brand Name, Store Id, Store Name, Gross Sale, Hour — report_month
+// is a value the uploader supplies, not something parsed from the file).
+// So this CANNOT supply a same-weekday effect — not a gap in this function,
+// a real absence of the underlying data (confirmed against real data: 21,200
+// rows / 563 stores, all monthly-grain, zero date-level rows anywhere).
+// Weekday seasonality is applied via the daily total above instead (which
+// DOES have real per-date history via sales_report), and this hour shape is
+// deliberately one flat store-level "typical hour-of-day curve" applied to
+// every date regardless of weekday — building a weekday tier here would mean
+// fabricating a distinction the data doesn't support. If Monday-vs-Saturday
+// hourly curves are needed later, the smallest change that would unlock it
+// is a new import capturing hourly sales at real DATE granularity (e.g. a
+// sales_by_hour_daily table/report), not an algorithm change to this
+// function — there is nothing here to derive that pattern from today.
+//   1. The store's own hour totals, summed across every available month
+//      (gross_sale: null rows — an hour not yet reported — excluded first,
+//      the same "never treat unreported as zero" rule computeDailyForecast
+//      already applies) and normalized to sum to 1 (restricted to operating
+//      hours — any sales recorded outside 09:00-22:00 are excluded from the
+//      shape as out-of-hours anomalies rather than silently redistributed).
 //   2. Otherwise, the same normalization across every store's hour totals
 //      (a chain-wide average shape).
 //   3. Otherwise (literally no hourly history anywhere), an equal 1/13 share
@@ -246,6 +261,7 @@ function computeDailyForecast(dailyHistory, targetDate) {
 function computeHourShape(hourlyRows, operatingHours) {
   const sums = new Map();
   for (const row of hourlyRows) {
+    if (row.gross_sale == null) continue; // not-yet-reported hour (data entry lag) — same class of bug as the daily forecast's null handling (93b7416): Number(null) === 0 would silently shrink that hour's share rather than being excluded
     if (!operatingHours.includes(row.hour)) continue; // exclude out-of-hours anomalies, never let them skew the shape
     sums.set(row.hour, (sums.get(row.hour) || 0) + Number(row.gross_sale));
   }
@@ -258,11 +274,13 @@ function computeHourShape(hourlyRows, operatingHours) {
 }
 
 /**
- * Generates and persists an hourly sales forecast for a store over a date
- * range. Draft/planning input only — never writes roster/shift data itself.
+ * The actual sales -> hourly forecast computation, shared by generateHourlyForecast (persists)
+ * and previewHourlyForecast (read-only) — same history load, same hour-shape fallback chain
+ * (STORE_HOUR_SHAPE -> CHAIN_HOUR_SHAPE -> UNIFORM_FALLBACK), same per-day computeDailyForecast x
+ * hourShape math. Pulled out so the read-only preview can never drift from what actually gets
+ * persisted — one computation, two callers.
  */
-async function generateHourlyForecast({ storeId, startDate, endDate }) {
-  const dates = eachDateInRange(startDate, endDate);
+async function computeHourlyForecastDays({ storeId, dates, startDate }) {
   const operatingHours = operatingHourList();
 
   const dailyHistory = await forecastRepo.findDailySalesHistory(storeId, { before: startDate });
@@ -279,29 +297,60 @@ async function generateHourlyForecast({ storeId, startDate, endDate }) {
     hourShape = new Map(operatingHours.map((h) => [h, 1 / operatingHours.length]));
   }
 
-  const modelRun = await forecastRepo.createModelRun('HOURLY-WEEKDAY-SHAPE-V1');
-
-  const forecastRows = [];
   const days = dates.map((date) => {
     const daily = computeDailyForecast(dailyHistory, date);
-    const hours = operatingHours.map((hour) => {
-      const forecastedSales = Math.round(daily.value * hourShape.get(hour));
-      forecastRows.push({
-        store_id: storeId,
-        forecast_date: date,
-        daypart: hourDaypart(hour),
-        forecasted_sales: forecastedSales,
-        model_run_id: modelRun.id,
-      });
-      return { hour, forecastedSales };
-    });
+    const hours = operatingHours.map((hour) => ({ hour, forecastedSales: Math.round(daily.value * hourShape.get(hour)) }));
     return { date, dailyForecast: Math.round(daily.value), dailyForecastSource: daily.source, dailyForecastSamples: daily.samples, hours };
   });
 
+  return { hourShapeSource, days };
+}
+
+/**
+ * Generates and persists an hourly sales forecast for a store over a date
+ * range. Draft/planning input only — never writes roster/shift data itself.
+ */
+async function generateHourlyForecast({ storeId, startDate, endDate }) {
+  const dates = eachDateInRange(startDate, endDate);
+  const { hourShapeSource, days } = await computeHourlyForecastDays({ storeId, dates, startDate });
+
+  const modelRun = await forecastRepo.createModelRun('HOURLY-WEEKDAY-SHAPE-V1');
+
+  const forecastRows = [];
+  for (const day of days) {
+    for (const h of day.hours) {
+      forecastRows.push({
+        store_id: storeId,
+        forecast_date: day.date,
+        daypart: hourDaypart(h.hour),
+        forecasted_sales: h.forecastedSales,
+        model_run_id: modelRun.id,
+      });
+    }
+  }
   await forecastRepo.upsertForecastRows(forecastRows);
 
   return {
     modelRunId: modelRun.id,
+    hourShapeSource,
+    totalForecast: Math.round(days.reduce((s, d) => s + d.dailyForecast, 0)),
+    days,
+  };
+}
+
+/**
+ * Read-only hourly forecast preview — same computeHourlyForecastDays computation
+ * generateHourlyForecast persists, but never creates a forecast_model_run or writes to
+ * sales_forecast. Mirrors previewDailyForecast's role: a page that lets someone browse a store's
+ * hourly forecast (switching stores, changing the date range) must not leave behind a new model
+ * run and a new batch of sales_forecast rows every time it's viewed.
+ */
+async function previewHourlyForecast({ storeId, startDate, endDate }) {
+  const dates = eachDateInRange(startDate, endDate);
+  const { hourShapeSource, days } = await computeHourlyForecastDays({ storeId, dates, startDate });
+
+  return {
+    storeId,
     hourShapeSource,
     totalForecast: Math.round(days.reduce((s, d) => s + d.dailyForecast, 0)),
     days,
@@ -333,6 +382,7 @@ module.exports = {
   simpleMovingAverage,
   linearRegression,
   generateHourlyForecast,
+  previewHourlyForecast,
   computeDailyForecast,
   computeHourShape,
   computeMonthlyForecastedSales,

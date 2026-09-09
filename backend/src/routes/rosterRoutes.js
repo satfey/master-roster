@@ -3,6 +3,7 @@ const rosterController = require('../controllers/rosterController');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 const { storeScope } = require('../middleware/storeScope');
+const { rosterScope } = require('../middleware/rosterScope');
 
 /**
  * @swagger
@@ -507,8 +508,10 @@ router.post('/actual-hours', authenticate, authorize('labor:input'), storeScope,
 router.get('/actual-hours', authenticate, authorize('labor:view'), storeScope, rosterController.listActualHours);
 router.get('/capacity', authenticate, authorize('labor:view'), storeScope, rosterController.capacity);
 router.get('/', authenticate, authorize('schedule:generate'), storeScope, rosterController.list);
-router.get('/:id', authenticate, rosterController.getOne);
-router.put('/:id', authenticate, authorize('schedule:update'), rosterController.update);
-router.delete('/:id', authenticate, authorize('schedule:delete'), rosterController.remove);
+// /:id routes are scoped by rosterScope, not storeScope — the id in the path is a roster id, so
+// the owning store has to be read from the roster itself (see middleware/rosterScope.js).
+router.get('/:id', authenticate, authorize('schedule:generate'), rosterScope, rosterController.getOne);
+router.put('/:id', authenticate, authorize('schedule:update'), rosterScope, rosterController.update);
+router.delete('/:id', authenticate, authorize('schedule:delete'), rosterScope, rosterController.remove);
 
 module.exports = router;

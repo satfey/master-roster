@@ -12,7 +12,8 @@ jest.mock('../../repositories/forecastRepository', () => ({
   upsertForecastRows: jest.fn(),
 }));
 const repo = require('../../repositories/forecastRepository');
-const { generateHourlyForecast, computeMonthlyForecastedSales, computeDailyForecast } = require('../forecastService');
+const { generateHourlyForecast, previewHourlyForecast, computeMonthlyForecastedSales, computeDailyForecast, computeHourShape } = require('../forecastService');
+const { operatingHourList } = require('../storeOperatingHours');
 
 /** Builds `count` weekly-spaced daily sales rows landing on the given weekday, ending just before `endExclusive`. */
 function dailyRowsForWeekday(weekday, amount, count, endExclusive = '2026-08-01') {
@@ -182,6 +183,71 @@ describe('forecastService.generateHourlyForecast', () => {
     const [rows] = repo.upsertForecastRows.mock.calls[0];
     expect(rows[0]).toMatchObject({ store_id: '1005', forecast_date: '2026-08-03', model_run_id: 'model-run-1' });
     expect(rows.every((r) => /^HOUR_\d{2}$/.test(r.daypart))).toBe(true);
+  });
+});
+
+describe('forecastService.previewHourlyForecast — read-only, same computation as generateHourlyForecast', () => {
+  test('produces the identical hour-by-hour breakdown generateHourlyForecast would, for the same inputs', async () => {
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+    repo.findHourlySalesHistory.mockResolvedValue([
+      { report_month: '2026-07-01', hour: 9, gross_sale: 1000 },
+      { report_month: '2026-07-01', hour: 12, gross_sale: 4000 },
+      { report_month: '2026-07-01', hour: 20, gross_sale: 5000 },
+    ]);
+
+    const preview = await previewHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-03' });
+
+    expect(preview.storeId).toBe('1005');
+    expect(preview.hourShapeSource).toBe('STORE_HOUR_SHAPE');
+    const day = preview.days[0];
+    expect(day.dailyForecastSource).toBe('STORE_WEEKDAY_AVERAGE');
+    expect(day.dailyForecast).toBe(10000);
+    expect(day.hours.find((h) => h.hour === 12).forecastedSales).toBe(4000);
+    expect(day.hours.find((h) => h.hour === 9).forecastedSales).toBe(1000);
+    expect(preview.totalForecast).toBe(10000);
+  });
+
+  // Never persists -- this is the whole point of a preview path (mirrors previewDailyForecast).
+  test('never creates a model run or writes to sales_forecast, however many times it is called', async () => {
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+    repo.findHourlySalesHistory.mockResolvedValue([{ report_month: '2026-07-01', hour: 9, gross_sale: 1000 }]);
+
+    await previewHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-03' });
+    await previewHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-09' });
+
+    expect(repo.createModelRun).not.toHaveBeenCalled();
+    expect(repo.upsertForecastRows).not.toHaveBeenCalled();
+  });
+
+  test('falls back through the same hour-shape chain as generateHourlyForecast (CHAIN_HOUR_SHAPE when the store has no shape of its own)', async () => {
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+    repo.findHourlySalesHistory.mockResolvedValue([]); // no store-specific shape
+    repo.findAllHourlySalesHistory.mockResolvedValue([{ store_id: '9999', hour: 9, gross_sale: 1 }]);
+
+    const preview = await previewHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-03' });
+
+    expect(preview.hourShapeSource).toBe('CHAIN_HOUR_SHAPE');
+  });
+
+  test('a store with no daily history at all still returns one entry per operating hour, all zero, not an error', async () => {
+    repo.findDailySalesHistory.mockResolvedValue([]);
+    repo.findHourlySalesHistory.mockResolvedValue([]);
+    repo.findAllHourlySalesHistory.mockResolvedValue([]);
+
+    const preview = await previewHourlyForecast({ storeId: '9999', startDate: '2026-08-03', endDate: '2026-08-03' });
+
+    expect(preview.hourShapeSource).toBe('UNIFORM_FALLBACK');
+    expect(preview.days[0].dailyForecastSource).toBe('NO_HISTORY');
+    expect(preview.days[0].hours.every((h) => h.forecastedSales === 0)).toBe(true);
+  });
+
+  test('one entry per date across a multi-day range, in order', async () => {
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+    repo.findHourlySalesHistory.mockResolvedValue([{ report_month: '2026-07-01', hour: 9, gross_sale: 1000 }]);
+
+    const preview = await previewHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-09' }); // Mon..Sun
+
+    expect(preview.days.map((d) => d.date)).toEqual(['2026-08-03', '2026-08-04', '2026-08-05', '2026-08-06', '2026-08-07', '2026-08-08', '2026-08-09']);
   });
 });
 
@@ -380,6 +446,71 @@ describe('forecastService.computeDailyForecast — bounded recency weighting on 
     expect(day.hours.find((h) => h.hour === 18).forecastedSales).toBe(Math.round(unroundedDaily * 0.6));
     const sumOfHours = day.hours.reduce((s, h) => s + h.forecastedSales, 0);
     expect(Math.abs(sumOfHours - day.dailyForecast)).toBeLessThanOrEqual(1); // still sums back within independent per-hour rounding, per the existing invariant
+  });
+});
+
+describe('forecastService.computeHourShape — null-safety and the (real, data-driven) absence of weekday awareness', () => {
+  const HOURS = operatingHourList();
+
+  // 6. Null historical sales are excluded (the same class of bug already fixed for the daily
+  // forecast in 93b7416 — Number(null) === 0 must never silently shrink an unreported hour's share).
+  test('a not-yet-reported hour (gross_sale: null) is excluded, not treated as 0 sales', () => {
+    const rows = [
+      { hour: 9, gross_sale: 1000 },
+      { hour: 12, gross_sale: null }, // not yet reported this month
+      { hour: 12, gross_sale: 4000 }, // reported in an earlier month
+    ];
+
+    const shape = computeHourShape(rows, HOURS);
+
+    // Total real signal is 1000 + 4000 = 5000, so hour 12's real share is 4000/5000 = 0.8 — if the
+    // null had been counted as a 3rd (zero-value) hour-12 entry, this would come out wrong.
+    expect(shape.get(12)).toBeCloseTo(0.8, 5);
+    expect(shape.get(9)).toBeCloseTo(0.2, 5);
+  });
+
+  test('a store whose ENTIRE hourly history is unreported (all null) returns null, correctly triggering the chain-wide fallback', () => {
+    const shape = computeHourShape([{ hour: 9, gross_sale: null }, { hour: 12, gross_sale: null }], HOURS);
+    expect(shape).toBeNull();
+  });
+
+  // 3. Store-specific hourly profile — two stores' own hour shapes stay independent of each other.
+  test('3. two stores with different hour-of-day shapes each keep their own — no cross-store mixing', async () => {
+    repo.findDailySalesHistory.mockResolvedValue(dailyRowsForWeekday(1, 10000, 4));
+    repo.findHourlySalesHistory.mockImplementation(async (storeId) =>
+      storeId === '1001'
+        ? [{ report_month: '2026-07-01', hour: 9, gross_sale: 8000 }, { report_month: '2026-07-01', hour: 20, gross_sale: 2000 }] // morning-heavy
+        : [{ report_month: '2026-07-01', hour: 9, gross_sale: 2000 }, { report_month: '2026-07-01', hour: 20, gross_sale: 8000 }] // evening-heavy
+    );
+
+    const resultA = await generateHourlyForecast({ storeId: '1001', startDate: '2026-08-03', endDate: '2026-08-03' });
+    const resultB = await generateHourlyForecast({ storeId: '1002', startDate: '2026-08-03', endDate: '2026-08-03' });
+
+    expect(resultA.hourShapeSource).toBe('STORE_HOUR_SHAPE');
+    expect(resultB.hourShapeSource).toBe('STORE_HOUR_SHAPE');
+    expect(resultA.days[0].hours.find((h) => h.hour === 9).forecastedSales).toBe(8000); // 80% of 10,000
+    expect(resultB.days[0].hours.find((h) => h.hour === 9).forecastedSales).toBe(2000); // 20% of 10,000 — genuinely different, not blended
+  });
+
+  // 4. Weekday-specific hourly profile IF supported by data — it is NOT (see the comment above
+  // computeHourShape in forecastService.js), so this locks in the honest current behavior: the
+  // same store, same hour, gets the IDENTICAL fraction regardless of which weekday is requested.
+  // This is a regression guard against ever silently fabricating a weekday effect here.
+  test("4. the hour shape does not vary by weekday — a real, data-driven limitation, not fabricated", async () => {
+    repo.findDailySalesHistory.mockResolvedValue([
+      ...dailyRowsForWeekday(1, 10000, 3), // Monday
+      ...dailyRowsForWeekday(6, 30000, 3), // Saturday — deliberately a very different daily total
+    ]);
+    repo.findHourlySalesHistory.mockResolvedValue([{ report_month: '2026-07-01', hour: 12, gross_sale: 3000 }, { report_month: '2026-07-01', hour: 18, gross_sale: 7000 }]);
+
+    const result = await generateHourlyForecast({ storeId: '1005', startDate: '2026-08-03', endDate: '2026-08-08' }); // Mon..Sat
+
+    const monday = result.days.find((d) => d.date === '2026-08-03');
+    const saturday = result.days.find((d) => d.date === '2026-08-08');
+    expect(monday.dailyForecast).not.toBe(saturday.dailyForecast); // the DAILY total correctly differs by weekday...
+    const mondayHour12Fraction = monday.hours.find((h) => h.hour === 12).forecastedSales / monday.dailyForecast;
+    const saturdayHour12Fraction = saturday.hours.find((h) => h.hour === 12).forecastedSales / saturday.dailyForecast;
+    expect(mondayHour12Fraction).toBeCloseTo(saturdayHour12Fraction, 5); // ...but the shape WITHIN the day is identical, honestly reflecting no weekday-hourly data exists
   });
 });
 

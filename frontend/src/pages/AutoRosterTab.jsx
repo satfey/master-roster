@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef } from "react";
-import { CalendarDays, Wand2, RefreshCcw, TrendingUp } from "lucide-react";
+import { CalendarDays, Wand2, RefreshCcw, TrendingUp, Store } from "lucide-react";
 import { Card, KpiTile, Btn, th, td, inp } from "../components/ui.jsx";
 import { apiGet, apiPost } from "../lib/api.js";
 import { loadKey, saveKey } from "../lib/storage.js";
 import { resolveRoster, forceRegenerateRoster, fetchExistingShiftsForRange } from "../lib/autoRoster.js";
+import { lockedStoreId } from "../lib/storeAccess.js";
 
 /**
  * Test/visualization screen only — NOT the production roster UI.
@@ -99,8 +100,13 @@ function RosterStatusBadge({ status }) {
   );
 }
 
-export default function AutoRosterTab() {
-  const [storeId, setStoreId] = useState("");
+export default function AutoRosterTab({ user }) {
+  // A Store Manager works one store and one store only — no store field to fill in, and no way to
+  // aim a generate/regenerate at someone else's store. storeScope on the backend enforces the same
+  // rule on every request regardless of what this component renders.
+  const pinnedStoreId = lockedStoreId(user);
+
+  const [storeId, setStoreId] = useState(pinnedStoreId || "");
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
   const [loading, setLoading] = useState(false);
@@ -146,6 +152,12 @@ export default function AutoRosterTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [overviewMonth]);
 
+  // A pinned store has no field to blur out of, so its overview is loaded straight away instead.
+  useEffect(() => {
+    if (pinnedStoreId) refreshMonthlyOverview(pinnedStoreId, overviewMonth);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedStoreId]);
+
   /** Re-reads the existing monthly capacity endpoint and prefills the actual-hours inputs from it — never computed locally. */
   const refreshCapacity = async (sid, anyDateInMonth) => {
     const cap = await apiGet(`/roster/capacity?storeId=${encodeURIComponent(sid)}&month=${anyDateInMonth.slice(0, 7)}`);
@@ -173,19 +185,24 @@ export default function AutoRosterTab() {
   useEffect(() => {
     (async () => {
       const saved = await loadKey(LAST_QUERY_KEY, null);
-      if (!saved?.storeId || !saved?.startDate || !saved?.endDate) return;
-      setStoreId(saved.storeId);
+      if (!saved?.startDate || !saved?.endDate) return;
+      // A pinned store always wins over the saved one — a store id left behind by an earlier
+      // session (or another account on this browser) must never be restored for a user who isn't
+      // allowed to see it.
+      const sid = pinnedStoreId || saved.storeId;
+      if (!sid) return;
+      setStoreId(sid);
       setStartDate(saved.startDate);
       setEndDate(saved.endDate);
       setLoading(true);
       try {
-        await checkExisting(saved.storeId, saved.startDate, saved.endDate);
+        await checkExisting(sid, saved.startDate, saved.endDate);
       } catch (err) {
         setError(err.message || "Failed to load the existing roster.");
       } finally {
         setLoading(false);
       }
-      refreshMonthlyOverview(saved.storeId, overviewMonth);
+      refreshMonthlyOverview(sid, overviewMonth);
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -294,13 +311,21 @@ export default function AutoRosterTab() {
         }
       >
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            placeholder="Store ID (e.g. 1001)"
-            value={storeId}
-            onChange={(e) => setStoreId(e.target.value)}
-            onBlur={() => refreshMonthlyOverview(storeId, overviewMonth)}
-            style={{ ...inp, width: 160 }}
-          />
+          {pinnedStoreId ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155", paddingRight: 4 }}>
+              <Store size={15} color="#0d9488" />
+              <b>Store {pinnedStoreId}</b>
+              <span style={{ color: "#94a3b8", fontSize: 12 }}>· your store</span>
+            </div>
+          ) : (
+            <input
+              placeholder="Store ID (e.g. 1001)"
+              value={storeId}
+              onChange={(e) => setStoreId(e.target.value)}
+              onBlur={() => refreshMonthlyOverview(storeId, overviewMonth)}
+              style={{ ...inp, width: 160 }}
+            />
+          )}
           <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} style={inp} />
           <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} style={inp} />
         </div>

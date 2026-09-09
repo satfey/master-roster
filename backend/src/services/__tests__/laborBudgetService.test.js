@@ -12,9 +12,13 @@ jest.mock('../../repositories/laborBudgetRepository', () => ({
 jest.mock('../forecastService', () => ({
   computeMonthlyForecastedSales: jest.fn(),
 }));
+jest.mock('../../repositories/whrTargetRepository', () => ({
+  findLatestProductivity: jest.fn(),
+}));
 jest.mock('../../config/supabase', () => ({}));
 const laborBudgetRepo = require('../../repositories/laborBudgetRepository');
 const forecastService = require('../forecastService');
+const whrTargetRepo = require('../../repositories/whrTargetRepository');
 const {
   resolveSalesLevel,
   matchTier,
@@ -23,6 +27,7 @@ const {
   getMonthlyLaborGuideline,
   computeMonthlySalesSummary,
   resolveMonthlyLaborHoursGuideline,
+  resolveTargetProductivity,
 } = require('../laborBudgetService');
 
 function tier({ storeId = null, salesMin, salesMax, allowedLaborHours = null, weekdayLaborHours = null, weekendLaborHours = null, level = null, standardWorkingHours = null, minStaffCount = null }) {
@@ -61,6 +66,56 @@ describe('laborBudgetService.resolveSalesLevel — gross_budget preferred, forec
     const result = await resolveSalesLevel({ storeId: '1001', date: '2026-08-24', forecastValue: null });
 
     expect(result).toEqual({ value: null, source: null });
+  });
+});
+
+describe('laborBudgetService.resolveTargetProductivity — the priority laborDemandService actually relies on, and the only place target_productivity is ever resolved', () => {
+  // Priority 1: an explicit manual override (labor_guideline.target_productivity) always wins,
+  // even when real WHR Target history also exists -- a human override is never silently
+  // superseded by historical data.
+  test('a manual override wins even when WHR Target history also exists', async () => {
+    whrTargetRepo.findLatestProductivity.mockResolvedValue({ productivity: 900, reportMonth: '2026-07-01' });
+
+    const result = await resolveTargetProductivity({ storeId: '1001', manualTargetProductivity: 1200 });
+
+    expect(result).toEqual({ value: 1200, source: 'MANUAL' });
+    expect(whrTargetRepo.findLatestProductivity).not.toHaveBeenCalled(); // manual short-circuits -- no need to even look up WHR history
+  });
+
+  // Priority 2: no manual override -> falls back to the store's own latest REAL reported WHR
+  // Target productivity (findLatestProductivity already excludes rows where productivity is null).
+  test('falls back to the latest real WHR Target productivity when no manual override is set', async () => {
+    whrTargetRepo.findLatestProductivity.mockResolvedValue({ productivity: 665, reportMonth: '2026-07-01' });
+
+    const result = await resolveTargetProductivity({ storeId: '1065', manualTargetProductivity: null });
+
+    expect(result).toEqual({ value: 665, source: 'WHR_TARGET_HISTORY', reportMonth: '2026-07-01' });
+  });
+
+  // Neither source exists -- must return null, NEVER invent/default a productivity figure.
+  test('returns null, not an invented default, when neither a manual override nor any WHR Target history exists', async () => {
+    whrTargetRepo.findLatestProductivity.mockResolvedValue(null);
+
+    const result = await resolveTargetProductivity({ storeId: '2012', manualTargetProductivity: null });
+
+    expect(result).toEqual({ value: null, source: null });
+  });
+
+  // resolveTargetProductivity itself uses a `!= null` check, so a manual override of exactly 0
+  // is accepted as a real "resolved" value (never falls through to WHR history) -- this is a
+  // KNOWN, pre-existing divergence from laborDemandService.computeHourlyLaborDemand, which uses a
+  // truthy check on target_productivity and therefore treats a resolved 0 the same as unset,
+  // flooring to the operational minimum instead. Documented here, not changed -- the real-data
+  // diagnostic (scripts/diagnose-productivity-coverage.js) found zero stores actually hit this
+  // edge case today (no labor_guideline row anywhere has target_productivity = 0), so there is
+  // nothing to fix behind it, but the divergence is real and worth a caller being aware of.
+  test('a manual override of exactly 0 is accepted as MANUAL (does not fall through to WHR history) -- see note above on the truthy-check divergence downstream', async () => {
+    whrTargetRepo.findLatestProductivity.mockResolvedValue({ productivity: 700, reportMonth: '2026-06-01' });
+
+    const result = await resolveTargetProductivity({ storeId: '1001', manualTargetProductivity: 0 });
+
+    expect(result).toEqual({ value: 0, source: 'MANUAL' });
+    expect(whrTargetRepo.findLatestProductivity).not.toHaveBeenCalled();
   });
 });
 

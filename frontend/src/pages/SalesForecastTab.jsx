@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo } from "react";
-import { TrendingUp } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
+import { TrendingUp, Clock, Store } from "lucide-react";
+import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from "recharts";
 import { Card, KpiTile, inp } from "../components/ui.jsx";
 import { apiGet } from "../lib/api.js";
 import { loadKey, saveKey } from "../lib/storage.js";
-import { fetchStoreOptions, fetchForecastPreview, summarizeForecast } from "../lib/salesForecast.js";
+import { fetchStoreOptions, fetchForecastPreview, fetchHourlyForecastPreview, summarizeForecast } from "../lib/salesForecast.js";
+import { lockedStoreId } from "../lib/storeAccess.js";
 
 /**
  * Real sales forecast, store by store — pick a store, see the daily forecast as a chart. Calls
@@ -39,6 +40,10 @@ function fmtDay(dateStr) {
   return new Date(`${dateStr}T00:00:00Z`).toLocaleDateString("en-US", { timeZone: "UTC", month: "short", day: "numeric" });
 }
 
+function fmtHour(hour) {
+  return `${String(hour).padStart(2, "0")}:00`;
+}
+
 function ChartTooltip({ active, payload, label }) {
   if (!active || !payload?.length) return null;
   return (
@@ -49,7 +54,12 @@ function ChartTooltip({ active, payload, label }) {
   );
 }
 
-export default function SalesForecastTab() {
+export default function SalesForecastTab({ user }) {
+  // A user pinned to a single store (a Store Manager) never sees a store picker — their store is
+  // fixed. The backend enforces the same rule independently (storeScope), this only removes a
+  // control that could never lead anywhere but a 403.
+  const pinnedStoreId = lockedStoreId(user);
+
   const [stores, setStores] = useState([]);
   const [storesError, setStoresError] = useState("");
   const [storeSearch, setStoreSearch] = useState("");
@@ -59,6 +69,11 @@ export default function SalesForecastTab() {
   const [days, setDays] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [hourlyDays, setHourlyDays] = useState([]);
+  const [hourlyLoading, setHourlyLoading] = useState(false);
+  const [hourlyError, setHourlyError] = useState("");
+  const [hourShapeSource, setHourShapeSource] = useState("");
+  const [selectedHourlyDate, setSelectedHourlyDate] = useState("");
 
   // Loads the store picker once — GET /store is already scoped server-side to what this user is
   // allowed to see (their own store, their assigned stores, or everything for Admin/Executive).
@@ -83,15 +98,24 @@ export default function SalesForecastTab() {
       const end = saved?.endDate || fallback.endDate;
       setStartDate(start);
       setEndDate(end);
+      // A pinned store always wins over whatever store was last viewed — a saved id from an
+      // earlier session (or another account on this browser) must never preselect a store this
+      // user isn't allowed to see.
+      if (pinnedStoreId) {
+        setSelectedStoreId(pinnedStoreId);
+        return;
+      }
       if (saved?.storeId) {
         setSelectedStoreId(saved.storeId);
         setStoreSearch(saved.storeLabel || saved.storeId);
       }
     })();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pinnedStoreId]);
 
   const storeById = useMemo(() => new Map(stores.map((s) => [String(s.id), s])), [stores]);
   const labelFor = (s) => `${s.storeId ?? s.id} — ${s.name}`;
+  const pinnedStore = pinnedStoreId ? storeById.get(String(pinnedStoreId)) : null;
 
   const runFetch = async (storeId, start, end) => {
     if (!storeId || !start || !end) return;
@@ -110,10 +134,32 @@ export default function SalesForecastTab() {
     }
   };
 
+  // Separate fetch (own loading/error state) so a slow or failed hourly breakdown never blocks the
+  // daily chart above it — same read-only /forecast/hourly/preview, never the persisting POST.
+  const runHourlyFetch = async (storeId, start, end) => {
+    if (!storeId || !start || !end) return;
+    setHourlyLoading(true);
+    setHourlyError("");
+    try {
+      const result = await fetchHourlyForecastPreview(apiGet, { storeId, startDate: start, endDate: end });
+      setHourlyDays(result.days);
+      setHourShapeSource(result.hourShapeSource);
+      setSelectedHourlyDate((prev) => (result.days.some((d) => d.date === prev) ? prev : result.days[0]?.date || ""));
+    } catch (err) {
+      setHourlyError(err.message || "Failed to load hourly forecast.");
+      setHourlyDays([]);
+    } finally {
+      setHourlyLoading(false);
+    }
+  };
+
   // Re-fetches once a store is actually resolved from the typed text, or the date range changes
   // — never fires on every keystroke while someone is still typing/searching.
   useEffect(() => {
-    if (selectedStoreId && startDate && endDate) runFetch(selectedStoreId, startDate, endDate);
+    if (selectedStoreId && startDate && endDate) {
+      runFetch(selectedStoreId, startDate, endDate);
+      runHourlyFetch(selectedStoreId, startDate, endDate);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedStoreId, startDate, endDate]);
 
@@ -126,6 +172,13 @@ export default function SalesForecastTab() {
   const summary = summarizeForecast(days);
   const allZero = days.length > 0 && days.every((d) => d.forecastedSales === 0);
   const chartData = days.map((d) => ({ ...d, label: fmtDay(d.date) }));
+
+  const selectedHourlyDay = hourlyDays.find((d) => d.date === selectedHourlyDate) || null;
+  const hourlyChartData = selectedHourlyDay ? selectedHourlyDay.hours.map((h) => ({ ...h, label: fmtHour(h.hour) })) : [];
+  const hourShapeSourceLabel =
+    { STORE_HOUR_SHAPE: "this store's own history", CHAIN_HOUR_SHAPE: "chain-wide average, no store history yet", UNIFORM_FALLBACK: "equal split, no hourly history anywhere" }[
+      hourShapeSource
+    ] || hourShapeSource;
 
   return (
     <div>
@@ -140,18 +193,28 @@ export default function SalesForecastTab() {
         }
       >
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
-          <input
-            list="storeOptions"
-            placeholder="Type a store name or ID…"
-            value={storeSearch}
-            onChange={(e) => handleStoreInput(e.target.value)}
-            style={{ ...inp, width: 280 }}
-          />
-          <datalist id="storeOptions">
-            {stores.map((s) => (
-              <option key={s.id} value={labelFor(s)} />
-            ))}
-          </datalist>
+          {pinnedStoreId ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, color: "#334155" }}>
+              <Store size={15} color="#0d9488" />
+              <b>{pinnedStore ? labelFor(pinnedStore) : pinnedStoreId}</b>
+              <span style={{ color: "#94a3b8", fontSize: 12 }}>· your store</span>
+            </div>
+          ) : (
+            <>
+              <input
+                list="storeOptions"
+                placeholder="Type a store name or ID…"
+                value={storeSearch}
+                onChange={(e) => handleStoreInput(e.target.value)}
+                style={{ ...inp, width: 280 }}
+              />
+              <datalist id="storeOptions">
+                {stores.map((s) => (
+                  <option key={s.id} value={labelFor(s)} />
+                ))}
+              </datalist>
+            </>
+          )}
         </div>
         {storesError && <div style={{ color: "#dc2626", fontSize: 12, marginTop: 10 }}>{storesError}</div>}
         {error && <div style={{ color: "#dc2626", fontSize: 12, marginTop: 10 }}>{error}</div>}
@@ -201,6 +264,44 @@ export default function SalesForecastTab() {
             <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 10 }}>
               Weekday-average forecast from real sales history — the same value the Auto Roster generator uses to size hourly manpower.
             </div>
+          </Card>
+
+          <Card
+            title="Hourly forecast breakdown"
+            icon={Clock}
+            right={
+              hourlyDays.length > 0 && (
+                <select value={selectedHourlyDate} onChange={(e) => setSelectedHourlyDate(e.target.value)} style={inp}>
+                  {hourlyDays.map((d) => (
+                    <option key={d.date} value={d.date}>
+                      {fmtDay(d.date)} — {fmtBaht(d.dailyForecast)}
+                    </option>
+                  ))}
+                </select>
+              )
+            }
+          >
+            {hourlyLoading && <div style={{ textAlign: "center", color: "#94a3b8", padding: 24, fontSize: 13 }}>Loading hourly breakdown…</div>}
+            {hourlyError && <div style={{ color: "#dc2626", fontSize: 12 }}>{hourlyError}</div>}
+            {!hourlyLoading && !hourlyError && selectedHourlyDay && (
+              <>
+                <div style={{ width: "100%", height: 260 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={hourlyChartData} margin={{ top: 8, right: 16, left: 8, bottom: 0 }}>
+                      <CartesianGrid stroke="#f1f5f9" vertical={false} />
+                      <XAxis dataKey="label" tick={{ fontSize: 11, fill: "#94a3b8" }} tickLine={false} axisLine={{ stroke: "#e2e8f0" }} />
+                      <YAxis tick={{ fontSize: 11, fill: "#94a3b8" }} tickFormatter={(v) => `${Math.round(v / 1000)}k`} tickLine={false} axisLine={false} width={40} />
+                      <Tooltip content={<ChartTooltip />} />
+                      <Bar dataKey="forecastedSales" fill="#0d9488" radius={[4, 4, 0, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 10 }}>
+                  {fmtDay(selectedHourlyDay.date)}'s daily forecast ({fmtBaht(selectedHourlyDay.dailyForecast)}) split across operating hours using the store's
+                  historical hour-of-day shape ({hourShapeSourceLabel}) — the same split the roster generator uses to size hourly manpower.
+                </div>
+              </>
+            )}
           </Card>
         </>
       )}

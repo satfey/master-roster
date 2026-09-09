@@ -2,9 +2,11 @@ jest.mock('../../config/supabase', () => ({})); // forecastService.js requires t
 
 jest.mock('../../repositories/forecastRepository', () => ({
   findDailySalesHistory: jest.fn(),
+  findHourlySalesHistory: jest.fn(),
+  findAllHourlySalesHistory: jest.fn(),
 }));
 const forecastRepo = require('../../repositories/forecastRepository');
-const { previewDailyForecast } = require('../forecastController');
+const { previewDailyForecast, previewHourlyForecast } = require('../forecastController');
 
 function makeRes() {
   const res = {};
@@ -105,5 +107,52 @@ describe('forecastController.previewDailyForecast', () => {
 
     expect(forecastRepo.findDailySalesHistory).toHaveBeenCalledTimes(1);
     expect(res.json.mock.calls[0][0].data.days).toHaveLength(10);
+  });
+});
+
+describe('forecastController.previewHourlyForecast', () => {
+  test('storeId is required', async () => {
+    const res = makeRes();
+    await previewHourlyForecast({ query: { startDate: '2026-10-01', endDate: '2026-10-05' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(forecastRepo.findDailySalesHistory).not.toHaveBeenCalled();
+  });
+
+  test('startDate and endDate are required', async () => {
+    const res = makeRes();
+    await previewHourlyForecast({ query: { storeId: '1001' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('a non-date string is rejected with 400, never reaches the database', async () => {
+    const res = makeRes();
+    await previewHourlyForecast({ query: { storeId: '1001', startDate: 'aaa', endDate: 'zzz' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(forecastRepo.findDailySalesHistory).not.toHaveBeenCalled();
+  });
+
+  test('startDate after endDate is rejected with 400', async () => {
+    const res = makeRes();
+    await previewHourlyForecast({ query: { storeId: '1001', startDate: '2026-10-10', endDate: '2026-10-01' } }, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('a valid request returns the hourly breakdown, computed via the real previewHourlyForecast service, and never writes anything', async () => {
+    forecastRepo.findDailySalesHistory.mockResolvedValue([{ report_date: '2026-09-24', gross_actual: 10000 }]); // a Thursday
+    forecastRepo.findHourlySalesHistory.mockResolvedValue([
+      { report_month: '2026-07-01', hour: 9, gross_sale: 1000 },
+      { report_month: '2026-07-01', hour: 12, gross_sale: 9000 },
+    ]);
+    const res = makeRes();
+
+    await previewHourlyForecast({ query: { storeId: '1001', startDate: '2026-10-01', endDate: '2026-10-01' } }, res); // also a Thursday
+
+    expect(res.status).not.toHaveBeenCalledWith(400);
+    const body = res.json.mock.calls[0][0];
+    expect(body.success).toBe(true);
+    expect(body.data.storeId).toBe('1001');
+    expect(body.data.hourShapeSource).toBe('STORE_HOUR_SHAPE');
+    const hour12 = body.data.days[0].hours.find((h) => h.hour === 12);
+    expect(hour12.forecastedSales).toBe(9000); // 90% of the 10,000 daily forecast
   });
 });

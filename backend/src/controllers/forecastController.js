@@ -1,4 +1,4 @@
-const { generateForecast, generateHourlyForecast, computeDailyForecast } = require('../services/forecastService');
+const { generateForecast, generateHourlyForecast, previewHourlyForecast, computeDailyForecast } = require('../services/forecastService');
 const forecastRepo = require('../repositories/forecastRepository');
 const { eachDateInRange } = require('../utils/dateRange');
 const { success, failure } = require('../utils/apiResponse');
@@ -56,6 +56,26 @@ async function previewDailyForecast(req, res) {
   return success(res, { storeId, days });
 }
 
+/**
+ * Read-only hourly forecast preview — same validation as previewDailyForecast above, but calls
+ * forecastService.previewHourlyForecast (computeDailyForecast x hour shape, per hour) instead of
+ * POST /forecast/hourly, which persists a forecast_model_run + sales_forecast rows on every call.
+ * A page letting someone browse a store's hourly forecast must not create that trail just from
+ * being viewed.
+ */
+async function previewHourlyForecastRoute(req, res) {
+  const { storeId, startDate, endDate } = req.query;
+  if (!storeId) return failure(res, 'storeId is required', 400);
+  if (!startDate || !endDate) return failure(res, 'startDate and endDate are required', 400);
+  if (!isValidISODate(startDate) || !isValidISODate(endDate)) {
+    return failure(res, 'startDate and endDate must be valid dates in YYYY-MM-DD format', 400);
+  }
+  if (startDate > endDate) return failure(res, 'startDate must not be after endDate', 400);
+
+  const result = await previewHourlyForecast({ storeId, startDate, endDate });
+  return success(res, result);
+}
+
 async function getForecast(req, res) {
   const { storeId, from, to } = req.query;
   let query = supabase.from('sales_forecast').select('*').eq('store_id', storeId).order('forecast_date', { ascending: true });
@@ -66,4 +86,4 @@ async function getForecast(req, res) {
   return success(res, forecasts);
 }
 
-module.exports = { createForecast, createHourlyForecast, getForecast, previewDailyForecast };
+module.exports = { createForecast, createHourlyForecast, getForecast, previewDailyForecast, previewHourlyForecast: previewHourlyForecastRoute };

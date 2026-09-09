@@ -21,6 +21,17 @@ export async function fetchForecastPreview(apiGet, { storeId, startDate, endDate
   return apiGet(`/forecast/preview?${query}`);
 }
 
+/**
+ * Hourly forecast for one store over a date range, via GET /forecast/hourly/preview — the same
+ * read-only, never-persists contract as fetchForecastPreview above, but broken down per operating
+ * hour (forecastedSales(date, hour) = dailyForecast(date) x hourFraction(hour), the same math
+ * POST /forecast/hourly persists when actually generating a roster).
+ */
+export async function fetchHourlyForecastPreview(apiGet, { storeId, startDate, endDate }) {
+  const query = new URLSearchParams({ storeId, startDate, endDate }).toString();
+  return apiGet(`/forecast/hourly/preview?${query}`);
+}
+
 /** Total / average / peak / lowest across a fetched day series — display-only aggregation, not a forecast decision. */
 export function summarizeForecast(days) {
   if (!days.length) return null;

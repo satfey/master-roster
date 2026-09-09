@@ -94,8 +94,8 @@ export default function App() {
       </div>
 
       <div style={{ padding: "20px 22px", maxWidth: 1180, margin: "0 auto" }}>
-        {activeTab === "autoRoster" && <AutoRosterTab />}
-        {activeTab === "forecast" && <SalesForecastTab />}
+        {activeTab === "autoRoster" && <AutoRosterTab user={authUser} />}
+        {activeTab === "forecast" && <SalesForecastTab user={authUser} />}
         {activeTab === "upload" && <UploadExcelTab />}
       </div>
     </div>

@@ -9,6 +9,7 @@
     "dev": "nodemon server.js",
     "seed": "node scripts/seed.js",
     "hash-password": "node scripts/hash-password.js",
+    "forecast:accuracy": "node scripts/forecast-accuracy.js",
     "test": "jest"
   },
   "dependencies": {
