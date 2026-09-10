@@ -1,0 +1,14 @@
+.chart-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: var(--placeholder-bg);
+  border-radius: var(--radius);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-family: var(--font-thai);
+  text-align: center;
+  padding: var(--sp-4);
+}

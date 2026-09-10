@@ -6,125 +6,19 @@ const multer = require('multer');
 const upload = multer({ storage: multer.memoryStorage() });
 
 /**
+ * NOTE: POST /store/import (importService.importStores — upserts stores by
+ * NAME, columns "name, region") is intentionally undocumented here — no
+ * frontend caller, no internal caller, and it's fully superseded by the
+ * real Store Master Import (POST /store/master/import, matching the actual
+ * company file: Effective Date/ID/BRANCH/Zone Update + Area Coach
+ * resolution). The route still exists and works — only removed from Swagger.
+ */
+
+/**
  * @swagger
- * /employee/import:
- *   post:
- *     summary: Bulk import employee data via Excel (.xlsx)
- *     description: Matches each row's store_code against store.storeCode (the DB column); rows with an unknown store code are skipped and reported in `errors`.
- *     tags: [Import]
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             required: [file]
- *             properties:
- *               file:
- *                 type: string
- *                 format: binary
- *                 description: .xlsx file with columns fullName, Email, store_code, position, hourlyRate (optional; Email is read but not persisted — no email column on employee)
- *     responses:
- *       200:
- *         description: Import result
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/ApiResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         imported: { type: integer }
- *                         total: { type: integer }
- *                         errors:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               row: { type: integer }
- *                               message: { type: string }
- *             example:
- *               success: true
- *               message: Employee data imported
- *               data:
- *                 imported: 4
- *                 total: 5
- *                 errors:
- *                   - row: 3
- *                     message: 'Unknown store_code: XX99'
- *       400:
- *         description: No file was uploaded.
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/ApiError' }
- *             example: { success: false, message: 'No file uploaded', errors: null }
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       403:
- *         $ref: '#/components/responses/ForbiddenError'
- *       500:
- *         $ref: '#/components/responses/ServerError'
- * /store/import:
- *   post:
- *     summary: Bulk import store data via Excel (.xlsx)
- *     description: Upserts by store name — updates the region if the store already exists, otherwise creates it.
- *     tags: [Import]
- *     requestBody:
- *       required: true
- *       content:
- *         multipart/form-data:
- *           schema:
- *             type: object
- *             required: [file]
- *             properties:
- *               file:
- *                 type: string
- *                 format: binary
- *                 description: .xlsx file with columns name, region
- *     responses:
- *       200:
- *         description: Import result
- *         content:
- *           application/json:
- *             schema:
- *               allOf:
- *                 - $ref: '#/components/schemas/ApiResponse'
- *                 - type: object
- *                   properties:
- *                     data:
- *                       type: object
- *                       properties:
- *                         imported: { type: integer }
- *                         total: { type: integer }
- *                         errors:
- *                           type: array
- *                           items:
- *                             type: object
- *                             properties:
- *                               row: { type: integer }
- *                               message: { type: string }
- *             example:
- *               success: true
- *               message: Store data imported
- *               data: { imported: 3, total: 3, errors: [] }
- *       400:
- *         description: No file was uploaded.
- *         content:
- *           application/json:
- *             schema: { $ref: '#/components/schemas/ApiError' }
- *             example: { success: false, message: 'No file uploaded', errors: null }
- *       401:
- *         $ref: '#/components/responses/UnauthorizedError'
- *       403:
- *         $ref: '#/components/responses/ForbiddenError'
- *       500:
- *         $ref: '#/components/responses/ServerError'
  * /import:
  *   post:
- *     summary: Generic bulk import via Excel (.xlsx) into a registered table (employee, store, laborGuideline)
+ *     summary: Generic bulk import via Excel (.xlsx) into a registered table (store, laborGuideline)
  *     description: >
  *       Validates every row up front and only inserts if the whole file is
  *       clean. **Note:** unlike every other endpoint in this API, this one
@@ -146,8 +40,8 @@ const upload = multer({ storage: multer.memoryStorage() });
  *                 description: .xlsx file matching the chosen entity's expected columns
  *               entity:
  *                 type: string
- *                 enum: [employee, store, laborGuideline]
- *                 description: Which registered table to import into
+ *                 enum: [store, laborGuideline]
+ *                 description: Which registered table to import into (employee moved to its own preview/commit flow — see POST /employee/import/preview and /employee/import)
  *     responses:
  *       201:
  *         description: Every row was valid and inserted.
@@ -196,7 +90,7 @@ const upload = multer({ storage: multer.memoryStorage() });
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/ApiError' }
- *             example: { success: false, message: 'Missing required field "entity" (e.g. employee, store, laborGuideline)', errors: null }
+ *             example: { success: false, message: 'Missing required field "entity" (e.g. store, laborGuideline)', errors: null }
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  *       403:
@@ -204,7 +98,6 @@ const upload = multer({ storage: multer.memoryStorage() });
  *       500:
  *         $ref: '#/components/responses/ServerError'
  */
-router.post('/employee/import', authenticate, authorize('employee:import'), upload.single('file'), importController.employeeImport);
 router.post('/store/import', authenticate, authorize('branch:manage'), upload.single('file'), importController.storeImport);
 router.post('/import', authenticate, authorize('data:import'), upload.single('file'), importController.genericImport);
 

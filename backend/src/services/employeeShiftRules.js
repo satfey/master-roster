@@ -1,0 +1,100 @@
+/**
+ * Shift-length/type constants and the employee.position_time_type classifier
+ * — shared by rosterGenerationService (which schedules shifts) and
+ * rosterValidationService (which checks them, including on a manually
+ * edited roster the generator never produced). Kept as one module, not
+ * copy-pasted into both, following the same reasoning as
+ * laborGuidelineHelpers.js: "so the [two] stay in sync". Also breaks what
+ * would otherwise be a circular require (rosterGenerationService already
+ * imports validateRoster from rosterValidationService).
+ *
+ * Full-time: exactly 8 PAID WORKING hours + a mandatory 1-hour unpaid
+ * meal/rest break placed after the first 4 working hours (never more than 5
+ * consecutive hours before the break) — 9 clock hours total, e.g.
+ * 09:00-18:00 with a break 13:00-14:00. FULL_TIME_SHIFT_HOURS is the
+ * WORKING-hour figure (matches planned_hours, labor cost, and every
+ * weekly/monthly cap, which all already mean "hours worked", not clock
+ * span); FULL_TIME_CLOCK_SPAN_HOURS positions a shift within the day
+ * (start_time -> end_time) only.
+ *
+ * Part-time: 4-8 working hours, never shorter or longer. 8h is a hard
+ * ceiling — the system never schedules a Part-time shift beyond it, so
+ * overtime is avoided by construction rather than tracked separately.
+ *
+ * Part-time break (Labour Protection Act B.E. 2541, Section 27): a rest
+ * break of at least 1 hour is required after working more than 5
+ * consecutive hours — not "PT shifts of X+ hours", since the trigger the
+ * law names is continuous working time, not a shift-length bracket. A PT
+ * shift of exactly 5 working hours or less needs no break; a PT shift of
+ * MORE than 5 working hours gets a 1-hour unpaid break placed after the
+ * first PART_TIME_BREAK_THRESHOLD_HOURS worked (mirroring how Full-time's
+ * break is placed after its first 4 hours), extending the clock span by
+ * PART_TIME_BREAK_HOURS the same way Full-time's does.
+ *
+
+ * FULL_TIME_MAX_CONSECUTIVE_DAYS is the Thailand labor-law baseline: a
+ * Full-time employee must get a rest day at least every 6 consecutive
+ * working days (48h/week + 8h/shift already implies at most 6 shifts within
+ * a single ISO week, but doesn't by itself prevent 7+ consecutive *calendar*
+ * days worked across a week boundary — this constant guards that case too).
+ */
+const FULL_TIME_SHIFT_HOURS = 8; // WORKING hours — excludes the break
+const FULL_TIME_BREAK_HOURS = 1;
+const FULL_TIME_CLOCK_SPAN_HOURS = FULL_TIME_SHIFT_HOURS + FULL_TIME_BREAK_HOURS; // 9 — start_time to end_time
+const FULL_TIME_MAX_CONSECUTIVE_DAYS = 6;
+const PART_TIME_MIN_HOURS = 4;
+const PART_TIME_MAX_HOURS = 8;
+const PART_TIME_BREAK_THRESHOLD_HOURS = 5; // more than this many consecutive working hours triggers the mandatory break
+const PART_TIME_BREAK_HOURS = 1;
+const DEFAULT_WEEKLY_HOURS = 48; // fallback when employee.default_weekly_hours is null, matching the legacy rosterService MAX_WEEKLY_HOURS
+
+function weeklyCapFor(employee) {
+  return employee.default_weekly_hours != null ? Number(employee.default_weekly_hours) : DEFAULT_WEEKLY_HOURS;
+}
+
+/** How much wall-clock room a Part-time shift of `workingHours` needs, including its break when one is legally required — used wherever a shift must be positioned to END at a specific clock time (e.g. store closing). */
+function partTimeClockSpanHours(workingHours) {
+  return workingHours + (workingHours > PART_TIME_BREAK_THRESHOLD_HOURS ? PART_TIME_BREAK_HOURS : 0);
+}
+
+/**
+ * Every legally valid "first working segment length" (in hours) for a shift of `workingHours`
+ * that has a break: the Labour Protection Act's "no more than 5 consecutive working hours"
+ * applies to BOTH segments a break splits the shift into, not just the one before it — so a
+ * segment of k hours is valid only when k <= 5 AND the remaining (workingHours - k) is also
+ * <= 5. This is deliberately NOT a single fixed offset (e.g. always "after 4 hours") — that was
+ * one arbitrary, always-compliant choice among several; returning the whole valid range lets a
+ * caller pick WHICH compliant offset best fits real hourly sales / avoids simultaneous breaks,
+ * without ever risking a non-compliant one. Called only for shift lengths that actually require
+ * a break (Full-time's fixed 8h; Part-time only when > PART_TIME_BREAK_THRESHOLD_HOURS).
+ */
+function validBreakOffsets(workingHours) {
+  const minK = Math.max(1, workingHours - PART_TIME_BREAK_THRESHOLD_HOURS);
+  const maxK = Math.min(PART_TIME_BREAK_THRESHOLD_HOURS, workingHours - 1);
+  const offsets = [];
+  for (let k = minK; k <= maxK; k++) offsets.push(k);
+  return offsets;
+}
+
+function employeeShiftType(employee) {
+  const t = (employee.position_time_type || '').trim().toLowerCase();
+  if (t.startsWith('full')) return 'FULL_TIME';
+  if (t.startsWith('part')) return 'PART_TIME';
+  return null; // no recognized type
+}
+
+module.exports = {
+  FULL_TIME_SHIFT_HOURS,
+  FULL_TIME_BREAK_HOURS,
+  FULL_TIME_CLOCK_SPAN_HOURS,
+  FULL_TIME_MAX_CONSECUTIVE_DAYS,
+  PART_TIME_MIN_HOURS,
+  PART_TIME_MAX_HOURS,
+  PART_TIME_BREAK_THRESHOLD_HOURS,
+  PART_TIME_BREAK_HOURS,
+  DEFAULT_WEEKLY_HOURS,
+  weeklyCapFor,
+  partTimeClockSpanHours,
+  validBreakOffsets,
+  employeeShiftType,
+};

@@ -1,0 +1,81 @@
+.store-rules__title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-strong);
+  font-family: var(--font-thai);
+}
+
+.store-rules__caption {
+  margin-top: 3px;
+  font-family: var(--font-thai);
+  font-size: 9px;
+  color: var(--text-faint);
+}
+
+/* The grey Business Rules box always spans the full width of the card, so it
+   lines up with the card edges on phone, tablet and desktop alike. */
+.store-rules__grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--sp-3);
+  width: 100%;
+  margin-top: var(--sp-4);
+  padding: var(--sp-3);
+  border-radius: var(--radius);
+  background: #f7f7f9;
+}
+
+.store-rules__field { display: flex; flex-direction: column; min-width: 0; }
+
+.store-rules__label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text);
+  font-family: var(--font-thai);
+}
+
+.store-rules__hint {
+  margin-top: 2px;
+  font-size: 8px;
+  line-height: 1.4;
+  color: var(--text-faint);
+  font-family: var(--font-thai);
+}
+
+.store-rules__field input {
+  width: 100%;
+  height: 34px;
+  margin-top: 6px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.store-rules__actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.store-rules__saved {
+  font-family: var(--font-thai);
+  font-size: 11px;
+  color: var(--green);
+}
+
+@media (min-width: 768px) {
+  .store-rules__grid {
+    gap: var(--sp-4);
+    padding: var(--sp-4);
+  }
+}
+
+/* Two columns would leave each field absurdly wide on a desktop, so the four
+   rules sit in one row instead — the box still fills the card. */
+@media (min-width: 1200px) {
+  .store-rules__grid { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}

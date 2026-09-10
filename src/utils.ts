@@ -1,5 +1,3 @@
-import * as XLSX from 'xlsx';
-
 export function trimOrNull(value: unknown): string | null {
   if (value === undefined || value === null) return null;
   const str = String(value).trim();
@@ -29,6 +27,16 @@ export function toPercentDecimal(value: unknown): number | null {
   return Number.isNaN(num) ? null : num;
 }
 
+// Excel's day-0 epoch is 1899-12-30; 25569 is the number of days between
+// that epoch and the Unix epoch (1970-01-01) — the same constant already
+// used by frontend/src/lib/calc.js's excelDateToStr, kept in sync here.
+// exceljs hands back a native Date for genuinely date-formatted cells (see
+// excel.ts's resolveCellValue), so this only runs for a plain number cell
+// that isn't styled as a date but is still meant to be read as one.
+function excelSerialToDate(serial: number): Date {
+  return new Date(Math.round((serial - 25569) * 86400 * 1000));
+}
+
 export function excelDateToISO(value: unknown): string | null {
   if (value === undefined || value === null || value === '') return null;
 
@@ -37,8 +45,7 @@ export function excelDateToISO(value: unknown): string | null {
   if (value instanceof Date) {
     date = value;
   } else if (typeof value === 'number') {
-    const parsed = XLSX.SSF.parse_date_code(value);
-    if (parsed) date = new Date(Date.UTC(parsed.y, parsed.m - 1, parsed.d));
+    date = excelSerialToDate(value);
   } else {
     const str = String(value).trim();
     if (str === '') return null;

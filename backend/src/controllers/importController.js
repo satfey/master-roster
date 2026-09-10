@@ -1,4 +1,4 @@
-const { importEmployees, importStores } = require('../services/importService');
+const { importStores } = require('../services/importService');
 const { previewSalesImport, commitSalesImport } = require('../services/salesImport/salesImportService');
 const { importGeneric } = require('../services/genericImport/genericImportService');
 const { success, failure } = require('../utils/apiResponse');
@@ -17,13 +17,6 @@ async function salesImport(req, res) {
   return success(res, result, 'Sales data imported');
 }
 
-async function employeeImport(req, res) {
-  if (!req.file) return failure(res, 'No file uploaded', 400);
-  const result = await importEmployees(req.file.buffer);
-  await logActivity({ userId: req.user.id, action: 'IMPORT_EXCEL', details: { type: 'EMPLOYEE', ...result } });
-  return success(res, result, 'Employee data imported');
-}
-
 async function storeImport(req, res) {
   if (!req.file) return failure(res, 'No file uploaded', 400);
   const result = await importStores(req.file.buffer);
@@ -34,7 +27,9 @@ async function storeImport(req, res) {
 /**
  * Generic bulk importer: POST /api/import, form-data { file, entity }.
  * `entity` selects which registered table to import into (see
- * services/genericImport/importRegistry.js) — e.g. employee, store, laborGuideline.
+ * services/genericImport/importRegistry.js) — currently: store, laborGuideline.
+ * Employee import has its own dedicated endpoint (POST /employee/import) —
+ * it is NOT registered here.
  */
 async function genericImport(req, res) {
   if (!req.file) return failure(res, 'No file uploaded', 400);
@@ -51,4 +46,4 @@ async function genericImport(req, res) {
   return res.status(result.success ? 201 : 422).json(result);
 }
 
-module.exports = { salesImportPreview, salesImport, employeeImport, storeImport, genericImport };
+module.exports = { salesImportPreview, salesImport, storeImport, genericImport };

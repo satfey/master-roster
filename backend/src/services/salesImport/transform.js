@@ -47,6 +47,24 @@ function parseDate(value) {
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 
+/**
+ * Preserves a source-file entity ID exactly as given, for use as a database
+ * primary key. A numeric Excel cell (e.g. 1001) becomes its plain integer
+ * text; a text cell (e.g. "001001") is kept verbatim — never round-tripped
+ * through Number(), which would strip leading zeros. Shared by every
+ * importer that adopts the source ID as the canonical store.id (Sales
+ * Report, Sales By Hour, Store Master) — NOT used by this file's own
+ * transformRow, which keeps its original storeCode-matching behavior.
+ */
+function normalizeStoreId(value) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? String(Math.trunc(value)) : null;
+  }
+  const str = String(value).trim();
+  return str === '' ? null : str;
+}
+
 /** Converts one raw parsed Excel row into a structured sales row + validation errors. */
 function transformRow(raw) {
   const errors = [];
@@ -85,4 +103,4 @@ function transformRows(rawRows) {
   return rawRows.map(transformRow);
 }
 
-module.exports = { transformRows, parseNumber, parseDate };
+module.exports = { transformRows, parseNumber, parseDate, normalizeStoreId };

@@ -1,0 +1,136 @@
+.staff__caption {
+  margin-bottom: var(--sp-3);
+  font-family: var(--font-thai);
+  font-size: 9px;
+  color: var(--text-faint);
+}
+
+.staff__toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.staff__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.staff__search svg {
+  position: absolute;
+  left: 9px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+
+.staff__search input {
+  width: 100%;
+  height: 30px;
+  padding: 0 var(--sp-2) 0 26px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-thai);
+}
+
+.staff__guideline-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-2);
+}
+
+.staff__guideline-form input {
+  height: 30px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-thai);
+}
+
+.staff__guideline-actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+}
+
+.staff-table--guideline { min-width: 0; }
+
+@media (min-width: 768px) {
+  .staff__guideline-form { flex-direction: row; }
+  .staff__guideline-form input { flex: 1; }
+}
+
+.staff__inline-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-2);
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-3);
+  border-radius: var(--radius);
+  background: #f7f7f9;
+}
+
+.staff__inline-form input {
+  height: 30px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-thai);
+}
+
+.staff-table__input {
+  width: 54px;
+  padding: 3px 5px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 10px;
+  font-family: inherit;
+  color: var(--text);
+}
+
+@media (min-width: 768px) {
+  .staff__inline-form { flex-direction: row; align-items: center; }
+  .staff__inline-form input { flex: 1; }
+}
+
+.staff__capacity {
+  margin-bottom: var(--sp-3);
+  font-family: var(--font-thai);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.staff__capacity.is-full { color: var(--red); }
+
+.staff__inline-form select {
+  height: 30px;
+  padding: 0 var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  font-family: var(--font-thai);
+  background: var(--surface);
+}
+
+.staff-table__select { width: 108px; }
+.staff-table__derived { color: var(--text-muted); white-space: nowrap; }
+
+@media (min-width: 768px) {
+  .staff__inline-form select { flex: 1; }
+}
+
+/* Shown to a role that may read the chain guideline but not change it. */
+.staff__guideline-readonly {
+  margin: 0 0 var(--sp-2);
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-thai);
+}

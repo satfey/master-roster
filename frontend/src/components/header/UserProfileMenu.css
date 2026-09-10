@@ -1,0 +1,114 @@
+.profile-sheet__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  background: rgba(17, 24, 39, 0.4);
+}
+
+.profile-sheet {
+  width: 100%;
+  max-width: 520px;
+  background: var(--surface);
+  border-radius: 20px 20px 0 0;
+  padding: var(--sp-3) var(--sp-5) var(--sp-6);
+  animation: profile-sheet-in 0.18s ease-out;
+}
+
+@keyframes profile-sheet-in {
+  from { transform: translateY(12px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.profile-sheet__handle {
+  display: block;
+  width: 44px;
+  height: 4px;
+  margin: 0 auto var(--sp-4);
+  border-radius: var(--radius-pill);
+  background: var(--border-strong);
+}
+
+.profile-sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--border);
+}
+
+.profile-sheet__head h2 {
+  font-size: 24px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.profile-sheet__head button {
+  display: inline-flex;
+  border: 0;
+  background: none;
+  color: var(--text);
+  padding: 4px;
+}
+
+.profile-sheet__identity {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-4);
+  margin: var(--sp-5) 0;
+  padding: var(--sp-4);
+  background: #f7f7f9;
+  border-radius: var(--radius);
+}
+
+.profile-sheet__avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 62px;
+  height: 62px;
+  border-radius: 50%;
+  background: #d4d4d8;
+  color: var(--navy);
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.profile-sheet__facts p {
+  font-size: 14px;
+  color: var(--text);
+  font-family: var(--font-thai);
+}
+
+.profile-sheet__name {
+  font-size: 17px !important;
+  font-weight: 700;
+  color: var(--text-strong);
+  margin-bottom: 2px;
+}
+
+.profile-sheet__signout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: 16px;
+  border: 0;
+  border-radius: var(--radius-lg);
+  background: var(--navy);
+  color: #fff;
+  font-size: 20px;
+  font-weight: 500;
+}
+
+.profile-sheet__signout:hover { background: var(--navy-dark); }
+
+@media (min-width: 768px) {
+  .profile-sheet__backdrop { align-items: center; }
+  .profile-sheet { border-radius: 20px; }
+  .profile-sheet__handle { display: none; }
+}

@@ -4,6 +4,15 @@ const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 
 /**
+ * NOTE: GET /dashboard and GET /dashboard/store/:id are intentionally
+ * undocumented here — no frontend caller, no internal caller, and they
+ * compute productivity from the legacy sales_record table (a separate,
+ * older calculation than what rosterValidationService now does properly
+ * from sales_report/hourly forecast/actual hours). The routes still exist
+ * and work (see dashboardController.js) — only removed from Swagger.
+ */
+
+/*
  * @swagger
  * /dashboard:
  *   get:
@@ -29,7 +38,7 @@ const authorize = require('../middleware/authorize');
  *                             type: object
  *                             properties:
  *                               store: { $ref: '#/components/schemas/Store' }
- *                               storeId: { type: string, format: uuid }
+ *                               storeId: { type: string, example: '1001', description: 'The canonical Store ID (store.id) — not a UUID.' }
  *                               salesActual: { type: number }
  *                               forecastSales: { type: number }
  *                               plannedHours: { type: number }
@@ -49,8 +58,8 @@ const authorize = require('../middleware/authorize');
  *               message: OK
  *               data:
  *                 stores:
- *                   - store: { id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1, name: Bangna Store, region: Bangkok, area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002 }
- *                     storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                   - store: { id: '1001', storeId: '1001', name: Bangna Store, region: Bangkok, area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002 }
+ *                     storeId: '1001'
  *                     salesActual: 30200
  *                     forecastSales: 32000
  *                     plannedHours: 16
@@ -59,8 +68,8 @@ const authorize = require('../middleware/authorize');
  *                     remainingHours: 11.5
  *                     laborPercent: 57.41
  *                     productivity: 1948.39
- *                 topPerformingStore: { storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1, productivity: 1948.39 }
- *                 worstPerformingStore: { storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa2, productivity: 0 }
+ *                 topPerformingStore: { storeId: '1001', productivity: 1948.39 }
+ *                 worstPerformingStore: { storeId: '1002', productivity: 0 }
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  *       403:
@@ -79,8 +88,8 @@ const authorize = require('../middleware/authorize');
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string, format: uuid }
- *         description: Store ID
+ *         schema: { type: string, example: '1001' }
+ *         description: Store ID (store.id) — not a UUID
  *       - in: query
  *         name: from
  *         schema: { type: string, format: date }
@@ -100,7 +109,7 @@ const authorize = require('../middleware/authorize');
  *                     data:
  *                       type: object
  *                       properties:
- *                         storeId: { type: string, format: uuid }
+ *                         storeId: { type: string, example: '1001', description: 'The canonical Store ID (store.id) — not a UUID.' }
  *                         salesActual: { type: number }
  *                         forecastSales: { type: number }
  *                         plannedHours: { type: number }
@@ -122,7 +131,7 @@ const authorize = require('../middleware/authorize');
  *               success: true
  *               message: OK
  *               data:
- *                 storeId: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 storeId: '1001'
  *                 salesActual: 30200
  *                 forecastSales: 32000
  *                 plannedHours: 16

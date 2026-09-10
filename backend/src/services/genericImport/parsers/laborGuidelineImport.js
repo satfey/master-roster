@@ -9,16 +9,16 @@ function parseOptionalNumber(value, errors, label) {
   return Number.isNaN(num) ? null : num;
 }
 
-/** Pre-fetches every store referenced by storeCode so parseRow can resolve FKs synchronously. */
+/** Pre-fetches every store referenced by storeCode so parseRow can resolve FKs synchronously. storeCode IS store.id (the canonical Store ID) — see storeImport.js parser. */
 async function buildContext(rows) {
   const codes = [...new Set(rows.map((r) => (r.storeCode ? String(r.storeCode).trim() : null)).filter(Boolean))];
   let stores = [];
   if (codes.length) {
-    const { data, error } = await supabase.from('store').select('*').in('code', codes);
+    const { data, error } = await supabase.from('store').select('*').in('id', codes);
     if (error) throw error;
     stores = data;
   }
-  return { storesByCode: new Map(stores.map((s) => [s.code, s])) };
+  return { storesByCode: new Map(stores.map((s) => [s.id, s])) };
 }
 
 function parseRow(row, ctx) {

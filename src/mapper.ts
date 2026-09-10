@@ -6,14 +6,14 @@ import { RawSalesRow, SalesRecordPayload, StorePayload } from './types';
 export function mapToStorePayload(row: RawSalesRow): StorePayload {
   return {
     storeBuId: row.storeBuId,
-    storeId: row.storeId as string,
+    storeId: row.storeId as number,
     storeName: row.storeName,
   };
 }
 
 export function mapToSalesRecordPayload(row: RawSalesRow): SalesRecordPayload {
   return {
-    storeId: row.storeId as string,
+    storeId: row.storeId as number,
     storeBuId: row.storeBuId,
     storeName: row.storeName,
     week: row.week,

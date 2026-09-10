@@ -1,0 +1,146 @@
+/**
+ * Maps the component styles onto the responsive type scale.
+ *
+ * The mobile design is the baseline; these rules let the same components grow
+ * on tablet and desktop instead of staying phone-sized. Selectors are prefixed
+ * with `html` because Vite injects component stylesheets after global.css, so
+ * equal-specificity rules here would otherwise lose.
+ */
+
+html .page {
+  gap: var(--page-gap);
+  padding: var(--page-gap);
+}
+
+html .card { padding: var(--card-pad); }
+html .card-head h2 { font-size: var(--fs-heading); }
+html .card-body--flush { margin: 0 calc(var(--card-pad) * -1) calc(var(--card-pad) * -1); }
+html .chart-placeholder { font-size: var(--fs-body); }
+html .page-title-bar h1 { font-size: var(--fs-heading); }
+
+/* Dashboard */
+html .metric-tile { padding: var(--sp-4) var(--sp-3); }
+html .metric-tile__label { font-size: var(--fs-small); }
+html .metric-tile__value { font-size: var(--fs-metric); }
+html .metric-tile__delta { font-size: var(--fs-tiny); }
+html .traffic-chart { padding: var(--card-pad); }
+html .traffic-chart__title { font-size: var(--fs-label); }
+html .traffic-chart__subtitle { font-size: var(--fs-tiny); }
+
+/* Sales */
+html .sales-stat__label,
+html .hour-tile__label { font-size: var(--fs-tiny); }
+html .sales-stat__value,
+html .hour-tile__value { font-size: var(--fs-heading); }
+html .hour-tile__caption { font-size: var(--fs-micro); }
+
+/* Roster */
+html .schedule-summary { padding: var(--card-pad); }
+html .schedule-summary__head h2 { font-size: var(--fs-label); }
+html .schedule-summary__head p { font-size: var(--fs-tiny); }
+html .schedule-figure__label { font-size: var(--fs-small); }
+html .schedule-figure__value { font-size: var(--fs-figure); }
+html .schedule-figure__unit { font-size: var(--fs-micro); }
+
+html .roster-page__heading { font-size: var(--fs-label); }
+html .roster-page__hint,
+html .roster-page__legend,
+html .roster-page__blocked { font-size: var(--fs-tiny); }
+
+html .roster-grid th,
+html .demand-grid th { font-size: var(--fs-micro); }
+html .roster-grid__name,
+html .demand-grid__label { font-size: var(--fs-small); }
+html .roster-grid__position,
+html .roster-grid__type,
+html .roster-grid__rule,
+html .demand-grid__caption { font-size: var(--fs-micro); }
+html .roster-grid__total { font-size: var(--fs-body); }
+html .demand-cell { font-size: var(--fs-small); }
+html .demand-legend { font-size: var(--fs-tiny); }
+
+/* All-store exception heatmap and its pop-up */
+html .network-roster__heading { font-size: var(--fs-label); }
+html .network-roster__hint { font-size: var(--fs-tiny); }
+html .exception-pin,
+html .exception-cell__none { font-size: var(--fs-small); }
+html .store-exception__head h2 { font-size: var(--fs-heading); }
+html .store-exception__meta,
+html .store-exception__gap { font-size: var(--fs-small); }
+html .store-exception__name { font-size: var(--fs-label); }
+html .store-exception__id { font-size: var(--fs-tiny); }
+
+html .shift-btn__label,
+html .shift-btn__off { font-size: var(--fs-small); }
+html .shift-btn__time { font-size: var(--fs-tiny); }
+html .shift-btn__break { font-size: var(--fs-micro); }
+
+html .labor-warnings,
+html .labor-warnings--clean { font-size: var(--fs-tiny); }
+
+/* Tables */
+html .staff-table { font-size: var(--fs-small); }
+html .staff-table__delete { font-size: var(--fs-tiny); }
+html .staff__caption,
+html .staff__capacity { font-size: var(--fs-tiny); }
+
+/* Settings and forms */
+html .settings-page { width: 100%; max-width: none; }
+html .settings-row {
+  width: 100%;
+  font-size: var(--fs-label);
+  padding: var(--card-pad);
+}
+html .sales-mgmt__title { font-size: var(--fs-label); }
+html .sales-mgmt__caption,
+html .audit-caption { font-size: var(--fs-micro); }
+html .sales-mgmt__note { font-size: var(--fs-tiny); }
+html .sales-mgmt__upload { font-size: var(--fs-small); }
+html .sales-mgmt__input { font-size: var(--fs-body); }
+html .store-rules__title { font-size: var(--fs-label); }
+html .store-rules__label { font-size: var(--fs-small); }
+html .store-rules__hint,
+html .store-rules__caption { font-size: var(--fs-micro); }
+
+/* Tablet and up */
+@media (min-width: 768px) {
+  html .roster-grid,
+  html .demand-grid { min-width: 0; }
+
+  html .shift-btn { min-height: 66px; }
+
+  html .sales-mgmt__input,
+  html .store-rules__field input,
+  html .staff__inline-form input,
+  html .staff__inline-form select,
+  html .staff__guideline-form input,
+  html .staff__search input { height: 38px; }
+
+  html .staff-table th,
+  html .staff-table td { padding: 10px; }
+
+  html .dashboard-page,
+  html .sales-page {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: start;
+  }
+
+  html .dashboard-page > :first-child,
+  html .dashboard-page > :last-child,
+  html .sales-page > :first-child { grid-column: 1 / -1; }
+}
+
+/* Desktop */
+@media (min-width: 1200px) {
+  html .dashboard-page,
+  html .sales-page { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+
+  html .dashboard-page__metrics,
+  html .sales-page__stats,
+  html .sales-page__hours { gap: var(--sp-4); }
+
+  html .shift-btn { min-height: 74px; }
+
+  html .roster-page { max-width: 1200px; }
+}

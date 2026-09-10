@@ -22,15 +22,15 @@ const schemas = {
   },
   Identity: {
     type: 'object',
-    description: 'The requesting identity attached to req.user. Currently always a fixed system identity — see /login.',
+    description: 'The requesting identity attached to req.user, resolved fresh from the database on every request from the Bearer token\'s user id — see /login and /me.',
     properties: {
       id: { type: 'string', format: 'uuid', nullable: true },
       name: { type: 'string', example: 'John Admin' },
       email: { type: 'string', format: 'email', example: 'admin@test.com' },
       role: { type: 'string', example: 'ADMIN' },
       permissions: { type: 'array', items: { type: 'string' }, example: ['*'] },
-      storeId: { type: 'string', format: 'uuid', nullable: true },
-      areaStoreIds: { type: 'array', items: { type: 'string', format: 'uuid' }, example: [] },
+      storeId: { type: 'string', nullable: true, example: '1001' },
+      areaStoreIds: { type: 'array', items: { type: 'string' }, example: [] },
     },
   },
   Role: {
@@ -47,22 +47,44 @@ const schemas = {
   },
   Store: {
     type: 'object',
+    description: 'store.id IS the canonical Store ID from the source Excel file (e.g. "1001") — a VARCHAR primary key, not a UUID.',
     properties: {
-      id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      id: { type: 'string', example: '1001', description: 'The canonical Store ID, taken directly from the source file on import. This is the primary key — not a UUID.' },
+      storeId: { type: 'string', example: '1001', description: 'Alias for `id`, for consumers that look for `storeId` specifically.' },
       name: { type: 'string', example: 'Bangna Store' },
       region: { type: 'string', nullable: true, example: 'Bangkok' },
-      area_coach_id: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002' },
+      area_coach_id: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002', description: 'FK to area_coach.id — still a UUID; Area Coaches are matched by name, not a source-file ID.' },
+      storeCode: { type: 'string', nullable: true, example: '1001', description: 'Non-canonical compatibility field — same value as `id`. `id` is the canonical identity.' },
     },
   },
   Employee: {
     type: 'object',
+    description: 'employee.id IS the canonical Employee ID from the Employee Master file — never a generated UUID. Leading zeros are preserved exactly.',
     properties: {
-      id: { type: 'string', format: 'uuid', example: 'cccccccc-cccc-cccc-cccc-cccccccc0001' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
-      full_name: { type: 'string', example: 'สมชาย ใจดี' },
+      id: { type: 'string', example: '000123', description: 'The canonical Employee ID from the source file — not a UUID.' },
+      store_id: { type: 'string', nullable: true, example: '1005', description: 'FK to store.id (the Store ID, not a UUID) — resolved from the Employee Master "Location" column.' },
+      title: { type: 'string', nullable: true, example: 'Mr.' },
+      first_name: { type: 'string', nullable: true, example: 'Somchai' },
+      last_name: { type: 'string', nullable: true, example: 'Jaidee' },
+      first_name_local: { type: 'string', nullable: true, example: 'สมชาย' },
+      last_name_local: { type: 'string', nullable: true, example: 'ใจดี' },
+      email: { type: 'string', nullable: true, example: 'somchai.j@example.com' },
       position: { type: 'string', nullable: true, example: 'Cashier' },
-      hourly_rate: { type: 'number', format: 'float', nullable: true, example: 120 },
+      position_time_type: { type: 'string', nullable: true, example: 'Full time' },
+      store_name: { type: 'string', nullable: true, example: 'DQ1005-CENTER ONE', description: 'Raw "Location" text from the Employee Master file, as-is.' },
+      default_weekly_hours: { type: 'number', format: 'float', nullable: true, example: 40 },
+      pay_rate_type: { type: 'string', nullable: true, example: 'Hourly' },
+      sl_comp_plan: { type: 'string', nullable: true },
+      sl_comp_amount: { type: 'number', format: 'float', nullable: true },
+      sl_comp_currency: { type: 'string', nullable: true, example: 'THB' },
+      sl_comp_frequency: { type: 'string', nullable: true, example: 'Monthly' },
+      hr_comp_plan: { type: 'string', nullable: true },
+      hr_comp_amount: { type: 'number', format: 'float', nullable: true },
+      hr_comp_currency: { type: 'string', nullable: true, example: 'THB' },
+      hr_comp_frequency: { type: 'string', nullable: true, example: 'Hourly' },
       is_active: { type: 'boolean', default: true },
+      created_at: { type: 'string', format: 'date-time' },
+      updated_at: { type: 'string', format: 'date-time' },
     },
   },
   User: {
@@ -72,7 +94,7 @@ const schemas = {
       full_name: { type: 'string', example: 'Bob Manager' },
       email: { type: 'string', format: 'email', example: 'manager1@test.com' },
       role_id: { type: 'string', format: 'uuid', example: '33333333-3333-3333-3333-333333333333' },
-      store_id: { type: 'string', format: 'uuid', nullable: true, example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', nullable: true, example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       is_active: { type: 'boolean', example: true },
     },
   },
@@ -87,12 +109,64 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: 'eeeeeeee-eeee-eeee-eeee-eeeeeeee0001' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       sales_date: { type: 'string', format: 'date', example: '2026-07-25' },
       amount: { type: 'number', format: 'float', example: 25000 },
       source_type_id: { type: 'string', format: 'uuid', example: 'dddddddd-dddd-dddd-dddd-dddddddd0001' },
       entered_by: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb003' },
       created_at: { type: 'string', format: 'date-time', example: '2026-07-31T03:25:54.489843' },
+    },
+  },
+  SalesReport: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id — this and report_store_id are now the same value in different types.' },
+      report_store_id: { type: 'integer', example: 1001 },
+      store_bu_id: { type: 'integer', nullable: true, example: 5 },
+      store_name: { type: 'string', nullable: true, example: 'Bangna Store' },
+      week: { type: 'string', nullable: true, example: '2026-27' },
+      report_date: { type: 'string', format: 'date', example: '2026-08-03' },
+      gross_actual: { type: 'number', nullable: true },
+      gross_budget: { type: 'number', nullable: true },
+      gross_variance_percent: { type: 'number', nullable: true, example: 0.052 },
+      gross_actual_ly: { type: 'number', nullable: true },
+      gross_ly_variance_percent: { type: 'number', nullable: true },
+      gross_actual_mtd: { type: 'number', nullable: true },
+      gross_budget_mtd: { type: 'number', nullable: true },
+      gross_mtd_variance_percent: { type: 'number', nullable: true },
+      gross_actual_ly_mtd: { type: 'number', nullable: true },
+      docket_actual: { type: 'integer', nullable: true },
+      docket_budget: { type: 'integer', nullable: true },
+      docket_variance_percent: { type: 'number', nullable: true },
+      docket_actual_ly: { type: 'integer', nullable: true },
+      docket_ly_variance_percent: { type: 'number', nullable: true },
+      customer_actual: { type: 'integer', nullable: true },
+      customer_budget: { type: 'integer', nullable: true },
+      customer_variance_percent: { type: 'number', nullable: true },
+      customer_actual_ly: { type: 'integer', nullable: true },
+      customer_ly_variance_percent: { type: 'number', nullable: true },
+      other_sales: { type: 'number', nullable: true },
+      service_charge: { type: 'number', nullable: true },
+      source_type_id: { type: 'string', format: 'uuid' },
+      entered_by: { type: 'string', format: 'uuid', nullable: true },
+      created_at: { type: 'string', format: 'date-time' },
+    },
+  },
+  SalesByHour: {
+    type: 'object',
+    properties: {
+      id: { type: 'string', format: 'uuid' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id — this and report_store_id are now the same value in different types.' },
+      report_store_id: { type: 'integer', example: 1001 },
+      brand_name: { type: 'string', nullable: true, example: 'ABC' },
+      store_name: { type: 'string', nullable: true, example: 'ABC Central' },
+      report_month: { type: 'string', format: 'date', example: '2026-07-01', description: 'Always the 1st of the month — supplied by the caller, not present in the Excel.' },
+      hour: { type: 'integer', example: 9 },
+      gross_sale: { type: 'number', example: 1280 },
+      source_type_id: { type: 'string', format: 'uuid' },
+      entered_by: { type: 'string', format: 'uuid', nullable: true },
+      created_at: { type: 'string', format: 'date-time' },
     },
   },
   ForecastModelRun: {
@@ -108,7 +182,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: '13131313-1313-1313-1313-131313131301' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       forecast_date: { type: 'string', format: 'date', example: '2026-08-01' },
       daypart: { type: 'string', example: 'FULL_DAY' },
       forecasted_sales: { type: 'number', format: 'float', example: 32000 },
@@ -119,7 +193,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: '14141414-1414-1414-1414-141414141401' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       target_productivity: { type: 'number', format: 'float', nullable: true, example: 1200 },
       target_col_percent: { type: 'number', format: 'float', nullable: true, example: 22 },
       min_staff_per_shift: { type: 'number', format: 'float', nullable: true, example: 3 },
@@ -141,7 +215,7 @@ const schemas = {
     properties: {
       id: { type: 'string', format: 'uuid', example: '17171717-1717-1717-1717-171717171701' },
       roster_id: { type: 'string', format: 'uuid', example: '16161616-1616-1616-1616-161616161601' },
-      employee_id: { type: 'string', format: 'uuid', example: 'cccccccc-cccc-cccc-cccc-cccccccc0001' },
+      employee_id: { type: 'string', example: '000123', description: 'FK to employee.id — the Employee ID from the source file, not a UUID.' },
       shift_date: { type: 'string', format: 'date', example: '2026-08-03' },
       start_time: { type: 'string', example: '08:00:00' },
       end_time: { type: 'string', example: '16:00:00' },
@@ -152,7 +226,7 @@ const schemas = {
     type: 'object',
     properties: {
       id: { type: 'string', format: 'uuid', example: '16161616-1616-1616-1616-161616161601' },
-      store_id: { type: 'string', format: 'uuid', example: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1' },
+      store_id: { type: 'string', example: '1001', description: 'FK to store.id (the Store ID, not a UUID).' },
       week_start: { type: 'string', format: 'date', example: '2026-08-03' },
       status: { type: 'string', example: 'APPROVED' },
       approved_by: { type: 'string', format: 'uuid', nullable: true, example: 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002' },
@@ -218,10 +292,16 @@ const options = {
       description:
         'AI Workforce Scheduling System — REST API documentation. ' +
         'All responses are wrapped as `{ success, message, data }` (see ApiResponse) on success, ' +
-        'or `{ success, message, errors }` (see ApiError) on failure. ' +
-        'NOTE: real login/JWT issuance is not implemented yet (see /login) — the API currently ' +
-        'runs every request as a fixed system identity — but all protected routes below document ' +
-        'the intended Bearer-auth contract (see securitySchemes.bearerAuth) for when it lands.',
+        'or `{ success, message, errors }` (see ApiError) on failure.\n\n' +
+        '**Authentication (real JWT, not a stub) — to call any endpoint below from this page:**\n' +
+        '1. Expand `POST /login` below, click *Try it out*, submit your email + password, and copy the `token` value from the response.\n' +
+        '2. Click the **Authorize** button at the top of this page.\n' +
+        '3. Paste **only the raw token** into the value field — do NOT type `Bearer ` in front of it. ' +
+        'This scheme is `type: http, scheme: bearer`, so Swagger UI already prepends `Bearer ` for you; ' +
+        'typing it yourself sends `Authorization: Bearer Bearer <token>`, which fails with 401 "Invalid or expired token".\n' +
+        '4. Click **Authorize**, then **Close** — every request from this page now carries your token automatically.\n\n' +
+        'Users/roles/store access are configured directly in the database (see `docs/API.md`) — there is no public registration endpoint. ' +
+        'An Admin whose role has `permissions: ["*"]` passes every `authorize(...)` check on every endpoint below, upload endpoints included.',
     },
     servers: [{ url: '/api', description: 'API base path' }],
     components: {

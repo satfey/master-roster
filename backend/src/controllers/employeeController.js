@@ -1,6 +1,7 @@
 const supabase = require('../config/supabase');
-const { success } = require('../utils/apiResponse');
+const { success, failure } = require('../utils/apiResponse');
 const { logActivity } = require('../utils/activityLogger');
+const { normalizeStoreId } = require('../services/salesImport/transform');
 
 async function list(req, res) {
   const { storeId } = req.query;
@@ -9,16 +10,32 @@ async function list(req, res) {
     .select('*')
     .eq('store_id', storeId)
     .eq('is_active', true)
-    .order('full_name', { ascending: true });
+    .order('last_name', { ascending: true });
   if (error) throw error;
   return success(res, employees);
 }
 
 async function create(req, res) {
-  const { storeId, fullName, position, hourlyRate, isActive } = req.body;
+  const { employeeId, storeId, firstName, lastName, position, isActive } = req.body;
+
+  // employee.id has no auto-generated default — it IS the business
+  // Employee ID from Excel, so it must be supplied explicitly, never
+  // invented. Same string-preserving parsing used for every other
+  // source-file ID (leading zeros survive exactly).
+  const normalizedEmployeeId = normalizeStoreId(employeeId);
+  if (normalizedEmployeeId === null) return failure(res, 'employeeId is required', 400);
+  if (!storeId) return failure(res, 'storeId is required', 400);
+
   const { data: employee, error } = await supabase
     .from('employee')
-    .insert({ store_id: storeId, full_name: fullName, position, hourly_rate: hourlyRate, is_active: isActive })
+    .insert({
+      id: normalizedEmployeeId,
+      store_id: storeId,
+      first_name: firstName || null,
+      last_name: lastName || null,
+      position: position || null,
+      is_active: isActive ?? true,
+    })
     .select()
     .single();
   if (error) throw error;
@@ -28,10 +45,17 @@ async function create(req, res) {
 
 async function update(req, res) {
   const { id } = req.params;
-  const { storeId, fullName, position, hourlyRate, isActive } = req.body;
+  const { storeId, firstName, lastName, position, isActive } = req.body;
   const { data: employee, error } = await supabase
     .from('employee')
-    .update({ store_id: storeId, full_name: fullName, position, hourly_rate: hourlyRate, is_active: isActive })
+    .update({
+      store_id: storeId,
+      first_name: firstName,
+      last_name: lastName,
+      position,
+      is_active: isActive,
+      updated_at: new Date().toISOString(),
+    })
     .eq('id', id)
     .select()
     .single();
@@ -44,7 +68,7 @@ async function remove(req, res) {
   const { id } = req.params;
   const { data: employee, error } = await supabase
     .from('employee')
-    .update({ is_active: false })
+    .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq('id', id)
     .select()
     .single();

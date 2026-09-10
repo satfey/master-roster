@@ -1,0 +1,34 @@
+.import-dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-6);
+  margin-bottom: var(--sp-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius);
+  background: #fafafa;
+  color: var(--text-muted);
+  font-family: var(--font-thai);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.import-dropzone input { display: none; }
+
+.import-error {
+  margin-bottom: var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  background: var(--red-soft);
+  color: var(--red);
+  font-family: var(--font-thai);
+  font-size: 11px;
+}
+
+.import-count {
+  margin: var(--sp-2) 0 var(--sp-3);
+  font-family: var(--font-thai);
+  font-size: 10px;
+  color: var(--text-faint);
+}

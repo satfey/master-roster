@@ -28,7 +28,8 @@ const { storeScope } = require('../middleware/storeScope');
  *               success: true
  *               message: OK
  *               data:
- *                 - id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 - id: '1001'
+ *                   storeId: '1001'
  *                   name: Bangna Store
  *                   region: Bangkok
  *                   area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
@@ -45,8 +46,12 @@ const { storeScope } = require('../middleware/storeScope');
  *         application/json:
  *           schema:
  *             type: object
- *             required: [name]
+ *             required: [storeId, name]
  *             properties:
+ *               storeId:
+ *                 type: string
+ *                 example: '1001'
+ *                 description: Becomes store.id directly. store.id has no auto-generated default — it must be supplied here, it is never invented.
  *               name:
  *                 type: string
  *               region:
@@ -56,8 +61,9 @@ const { storeScope } = require('../middleware/storeScope');
  *                 type: string
  *                 format: uuid
  *                 nullable: true
- *                 description: ID of the user (Area Coach role) overseeing this store
+ *                 description: area_coach.id overseeing this store
  *           example:
+ *             storeId: '1001'
  *             name: Bangna Store
  *             region: Bangkok
  *             areaCoachId: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
@@ -76,10 +82,16 @@ const { storeScope } = require('../middleware/storeScope');
  *               success: true
  *               message: Store created
  *               data:
- *                 id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 id: '1001'
  *                 name: Bangna Store
  *                 region: Bangkok
  *                 area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
+ *       400:
+ *         description: storeId or name missing.
+ *         content:
+ *           application/json:
+ *             schema: { $ref: '#/components/schemas/ApiError' }
+ *             example: { success: false, message: 'storeId is required', errors: null }
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  *       403:
@@ -94,7 +106,8 @@ const { storeScope } = require('../middleware/storeScope');
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string, format: uuid }
+ *         schema: { type: string, example: '1001' }
+ *         description: Store ID (store.id) — not a UUID
  *     responses:
  *       200:
  *         description: Store with embedded relations
@@ -117,37 +130,35 @@ const { storeScope } = require('../middleware/storeScope');
  *                               type: array
  *                               items: { $ref: '#/components/schemas/LaborGuideline' }
  *                             area_coach:
- *                               allOf:
- *                                 - $ref: '#/components/schemas/User'
+ *                               type: object
  *                               nullable: true
+ *                               properties:
+ *                                 id: { type: string, format: uuid }
+ *                                 name: { type: string, example: 'Alice Area Coach' }
  *             example:
  *               success: true
  *               message: OK
  *               data:
- *                 id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 id: '1001'
  *                 name: Bangna Store
  *                 region: Bangkok
  *                 area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
  *                 employee:
- *                   - id: cccccccc-cccc-cccc-cccc-cccccccc0001
- *                     store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
- *                     full_name: สมชาย ใจดี
+ *                   - id: '000123'
+ *                     store_id: '1001'
+ *                     first_name: Somchai
+ *                     last_name: Jaidee
  *                     position: Cashier
- *                     hourly_rate: 120
  *                     is_active: true
  *                 labor_guideline:
  *                   - id: 14141414-1414-1414-1414-141414141401
- *                     store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                     store_id: '1001'
  *                     target_productivity: 1200
  *                     target_col_percent: 22
  *                     min_staff_per_shift: 3
  *                 area_coach:
  *                   id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
- *                   full_name: Alice Area Coach
- *                   email: coach@test.com
- *                   role_id: 22222222-2222-2222-2222-222222222222
- *                   store_id: null
- *                   is_active: true
+ *                   name: Alice Area Coach
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  *       403:
@@ -166,7 +177,8 @@ const { storeScope } = require('../middleware/storeScope');
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string, format: uuid }
+ *         schema: { type: string, example: '1001' }
+ *         description: Store ID (store.id) — not a UUID
  *     requestBody:
  *       required: true
  *       content:
@@ -202,7 +214,7 @@ const { storeScope } = require('../middleware/storeScope');
  *               success: true
  *               message: Store updated
  *               data:
- *                 id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 id: '1001'
  *                 name: Bangna Store
  *                 region: Bangkok
  *                 area_coach_id: bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbb002
@@ -221,8 +233,8 @@ const { storeScope } = require('../middleware/storeScope');
  *       - in: path
  *         name: id
  *         required: true
- *         schema: { type: string, format: uuid }
- *         description: Store ID
+ *         schema: { type: string, example: '1001' }
+ *         description: Store ID (store.id) — not a UUID
  *     requestBody:
  *       required: true
  *       content:
@@ -241,10 +253,16 @@ const { storeScope } = require('../middleware/storeScope');
  *               minStaffPerShift:
  *                 type: number
  *                 format: float
+ *               monthlyLaborHours:
+ *                 type: number
+ *                 format: float
+ *                 nullable: true
+ *                 description: PHASE 2 store-level monthly labor-hour guideline (e.g. 1000) — unset means no store-level monthly cap is enforced
  *           example:
  *             targetProductivity: 1200
  *             targetColPercent: 22
  *             minStaffPerShift: 3
+ *             monthlyLaborHours: 1000
  *     responses:
  *       200:
  *         description: Labor guideline created or updated
@@ -261,7 +279,7 @@ const { storeScope } = require('../middleware/storeScope');
  *               message: Labor guideline updated
  *               data:
  *                 id: 14141414-1414-1414-1414-141414141401
- *                 store_id: aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaa1
+ *                 store_id: '1001'
  *                 target_productivity: 1200
  *                 target_col_percent: 22
  *                 min_staff_per_shift: 3

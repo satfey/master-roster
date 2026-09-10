@@ -1,0 +1,4 @@
+.dashboard-page__metrics {
+  display: flex;
+  gap: var(--sp-2);
+}

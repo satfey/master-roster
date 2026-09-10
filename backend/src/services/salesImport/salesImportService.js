@@ -66,13 +66,13 @@ async function commitSalesImport(buffer) {
   const validRows = rows.filter((r) => r.status === 'valid');
 
   const sourceType = await repo.getExcelSourceType();
+  // sales_record only has store_id/sales_date/amount/source_type_id/entered_by — docket and
+  // labourHours are parsed and shown in preview (informational) but have no column to write to.
   const records = validRows.map((r) => ({
-    storeId: r.storeId,
-    salesDate: new Date(r.salesDate),
+    store_id: r.storeId,
+    sales_date: r.salesDate,
     amount: r.salesAmount,
-    docket: r.docket,
-    labourHours: r.labourHours,
-    sourceTypeId: sourceType.id,
+    source_type_id: sourceType.id,
   }));
 
   const imported = await repo.insertRecords(records);

@@ -1,0 +1,123 @@
+.store-exception__backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--sp-4);
+  background: rgba(17, 24, 39, 0.4);
+}
+
+.store-exception {
+  width: 100%;
+  max-width: 460px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  padding: var(--sp-4) var(--sp-5) var(--sp-5);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-raised);
+  animation: store-exception-in 0.18s ease-out;
+}
+
+@keyframes store-exception-in {
+  from { transform: translateY(8px); opacity: 0; }
+  to { transform: translateY(0); opacity: 1; }
+}
+
+.store-exception__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+}
+
+.store-exception__head h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--font-thai);
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.store-exception__head h2 svg { color: var(--red); flex: 0 0 auto; }
+
+.store-exception__head button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  padding: 2px;
+  border: 0;
+  background: none;
+  color: var(--text-muted);
+}
+
+.store-exception__meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: var(--sp-2);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--border);
+  font-family: var(--font-thai);
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.store-exception__meta span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.store-exception__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  overflow-y: auto;
+}
+
+.store-exception__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.store-exception__list li:last-child { border-bottom: 0; }
+
+.store-exception__name {
+  font-family: var(--font-thai);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-strong);
+}
+
+.store-exception__id {
+  margin-top: 1px;
+  font-size: 10px;
+  color: var(--text-faint);
+}
+
+.store-exception__gap {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 3px 9px;
+  border-radius: var(--radius-pill);
+  font-family: var(--font-thai);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.store-exception__gap.is-red { background: var(--red-soft); color: #b91c1c; }
+.store-exception__gap.is-amber { background: var(--amber-soft); color: #b45309; }
+
+.store-exception .btn { flex: 0 0 auto; }

@@ -1,54 +1,102 @@
-/**
- * TEMPORARY: the login system is deferred (see project notes / README).
- * The new ERD's `user` table has no password field yet, so instead of
- * validating a JWT we attach a fixed "system" identity with full access.
- * This keeps every downstream route, controller, and RBAC check working
- * unchanged — swap this back to real JWT verification once auth is built.
- *
- * To re-enable real authentication later:
- *   1. Add a credentials table (e.g. `user_credential` with password_hash).
- *   2. Restore JWT issuance in authController.login.
- *   3. Replace the body of this function with token verification + DB lookup.
- */
 const supabase = require('../config/supabase');
+const { verifyToken } = require('../utils/jwt');
+const { failure } = require('../utils/apiResponse');
 
-let cachedSystemUser = null;
+/**
+ * Builds the req.user shape every downstream consumer (authorize.js,
+ * storeScope.js) already expects, from a real `user` row (joined with its
+ * role). Shared by the login controller (right after verifying a password)
+ * and this middleware (on every subsequent authenticated request), so both
+ * paths compute identity — including an AREA_COACH's allowed stores —
+ * exactly the same way.
+ *
+ * areaStoreIds is only ever non-empty for AREA_COACH: it's every store
+ * whose area_coach_id matches the area_coach record this login resolves to
+ * (see resolveAreaCoachId).
+ */
 
-async function authenticate(req, res, next) {
-  try {
-    if (!cachedSystemUser) {
-      const { data: adminRole } = await supabase.from('role').select('id').eq('name', 'ADMIN').maybeSingle();
-      const { data: adminUser } = adminRole
-        ? await supabase.from('users').select('*').eq('role_id', adminRole.id).limit(1).maybeSingle()
-        : { data: null };
+/**
+ * Which area_coach record this login IS.
+ *
+ * store.area_coach_id already says which coach owns each store; what's missing is the other half
+ * of the link — the account -> coach direction. The intended column for that (user.area_coach_id,
+ * from the user-credentials migration) was never actually created in this database, and
+ * `area_coach` carries only an id and a name, so there is no email or code to join on.
+ *
+ * So: use the column when it exists, otherwise fall back to matching the account's own name
+ * against the coach's. A name that matches more than one coach resolves to NOTHING rather than
+ * picking one — an Area Coach scoped to the wrong area would silently read another region's
+ * stores, which is worse than being scoped to none and noticing.
+ */
+async function resolveAreaCoachId(userRow) {
+  if (userRow.area_coach_id) return userRow.area_coach_id;
+  if (!userRow.full_name) return null;
 
-      cachedSystemUser = {
-        id: adminUser?.id || null,
-        name: adminUser?.full_name || 'System (no login required)',
-        email: adminUser?.email || 'system@masterroster.local',
-        role: 'ADMIN',
-        permissions: ['*'],
-        storeId: adminUser?.store_id || null,
-        areaStoreIds: [],
-      };
+  const { data, error } = await supabase.from('area_coach').select('id').ilike('name', userRow.full_name);
+  if (error) throw error;
+  return data && data.length === 1 ? data[0].id : null;
+}
+
+async function buildUserIdentity(userRow) {
+  let areaStoreIds = [];
+  if (userRow.role?.name === 'AREA_COACH') {
+    const areaCoachId = await resolveAreaCoachId(userRow);
+    if (areaCoachId) {
+      const { data: stores, error } = await supabase.from('store').select('id').eq('area_coach_id', areaCoachId);
+      if (error) throw error;
+      areaStoreIds = stores.map((s) => s.id);
     }
-
-    req.user = cachedSystemUser;
-    next();
-  } catch (err) {
-    // Even if the DB lookup fails, don't block the request — fall back to a
-    // bare system identity so the app remains usable while login is WIP.
-    req.user = {
-      id: null,
-      name: 'System (no login required)',
-      email: 'system@masterroster.local',
-      role: 'ADMIN',
-      permissions: ['*'],
-      storeId: null,
-      areaStoreIds: [],
-    };
-    next();
   }
+
+  return {
+    id: userRow.id,
+    name: userRow.full_name,
+    email: userRow.email,
+    role: userRow.role?.name ?? null,
+    permissions: userRow.role?.permissions ?? [],
+    storeId: userRow.store_id,
+    areaStoreIds,
+  };
+}
+
+/** Fetches the active user + role for a user id — the one place both login and authenticate look a user up, so an inactive/deleted account is treated identically by both. */
+async function findActiveUserById(userId) {
+  const { data, error } = await supabase.from('user').select('*, role(*)').eq('id', userId).eq('is_active', true).maybeSingle();
+  if (error) throw error;
+  return data;
+}
+
+/**
+ * Verifies the `Authorization: Bearer <token>` header and attaches the real,
+ * current identity of that user to req.user — re-read from the database on
+ * every request (not trusted from the token's own claims, which only ever
+ * carry the user id) so a role change, store reassignment, or deactivation
+ * takes effect on the user's very next request rather than waiting for the
+ * token to expire.
+ */
+async function authenticate(req, res, next) {
+  const header = req.headers.authorization || '';
+  const [scheme, token] = header.split(' ');
+  if (scheme !== 'Bearer' || !token) {
+    return failure(res, 'Not authenticated', 401);
+  }
+
+  let decoded;
+  try {
+    decoded = verifyToken(token);
+  } catch (err) {
+    return failure(res, 'Invalid or expired token', 401);
+  }
+
+  const userRow = await findActiveUserById(decoded.userId);
+  if (!userRow) {
+    return failure(res, 'Not authenticated', 401);
+  }
+
+  req.user = await buildUserIdentity(userRow);
+  next();
 }
 
 module.exports = authenticate;
+module.exports.buildUserIdentity = buildUserIdentity;
+module.exports.findActiveUserById = findActiveUserById;

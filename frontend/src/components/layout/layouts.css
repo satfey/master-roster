@@ -1,0 +1,29 @@
+.layout {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--app-bg);
+}
+
+.layout__main {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Mobile — content must clear the fixed bottom nav */
+.layout--mobile .layout__main {
+  padding-bottom: calc(var(--bottom-nav-h) + var(--sp-6) + env(safe-area-inset-bottom, 0px));
+}
+
+/* Tablet — sidebar is an overlay drawer, so content uses the full width */
+.layout--tablet .layout__main {
+  padding: var(--sp-2) var(--sp-4) var(--sp-8);
+}
+
+/* Desktop — wider gutters, content capped for readability */
+.layout--desktop .layout__main {
+  width: 100%;
+  max-width: 1440px;
+  margin: 0 auto;
+  padding: var(--sp-4) var(--sp-6) var(--sp-8);
+}
