@@ -12,7 +12,7 @@ const { buildUserIdentity, findActiveUserById } = require('../middleware/authent
  * already-issued token.
  */
 async function findActiveUserByEmail(email) {
-  const { data, error } = await supabase.from('users').select('*, role(*)').eq('email', email).eq('is_active', true).maybeSingle();
+  const { data, error } = await supabase.from('user').select('*, role(*)').eq('email', email).eq('is_active', true).maybeSingle();
   if (error) throw error;
   return data;
 }

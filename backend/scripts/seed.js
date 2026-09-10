@@ -52,7 +52,7 @@ async function seed() {
     { id: ROLE_STORE_MANAGER, name: 'Store Manager', permissions: ['MANAGE_STORE', 'ENTER_SALES', 'MANAGE_ROSTER'] },
   ]);
 
-  // Stores first without area_coach_id — that FK points at users, and users
+  // Stores first without area_coach_id — that FK points at `user`, and a user
   // can reference a store, so the two tables have a circular dependency.
   // We break the cycle by patching area_coach_id back in after users exist.
   await upsert('store', [
@@ -60,7 +60,7 @@ async function seed() {
     { id: STORE_LADPRAO, name: 'ลาดพร้าว Store', region: 'Bangkok', area_coach_id: null },
   ]);
 
-  await upsert('users', [
+  await upsert('user', [
     { id: USER_ADMIN, full_name: 'John Admin', email: 'admin@test.com', role_id: ROLE_ADMIN, store_id: null, is_active: true },
     { id: USER_AREA_COACH, full_name: 'Alice Area Coach', email: 'coach@test.com', role_id: ROLE_AREA_COACH, store_id: null, is_active: true },
     { id: USER_MANAGER_BANGNA, full_name: 'Bob Manager', email: 'manager1@test.com', role_id: ROLE_STORE_MANAGER, store_id: STORE_BANGNA, is_active: true },

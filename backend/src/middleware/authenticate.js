@@ -4,7 +4,7 @@ const { failure } = require('../utils/apiResponse');
 
 /**
  * Builds the req.user shape every downstream consumer (authorize.js,
- * storeScope.js) already expects, from a real `users` row (joined with its
+ * storeScope.js) already expects, from a real `user` row (joined with its
  * role). Shared by the login controller (right after verifying a password)
  * and this middleware (on every subsequent authenticated request), so both
  * paths compute identity — including an AREA_COACH's allowed stores —
@@ -36,7 +36,7 @@ async function buildUserIdentity(userRow) {
 
 /** Fetches the active user + role for a user id — the one place both login and authenticate look a user up, so an inactive/deleted account is treated identically by both. */
 async function findActiveUserById(userId) {
-  const { data, error } = await supabase.from('users').select('*, role(*)').eq('id', userId).eq('is_active', true).maybeSingle();
+  const { data, error } = await supabase.from('user').select('*, role(*)').eq('id', userId).eq('is_active', true).maybeSingle();
   if (error) throw error;
   return data;
 }

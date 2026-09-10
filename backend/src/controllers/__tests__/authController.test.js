@@ -8,7 +8,7 @@ const { hashPassword } = require('../../utils/password');
 const { verifyToken } = require('../../utils/jwt');
 const { login, me } = require('../authController');
 
-/** Minimal fake supabase-js query builder for `users` (by email) and `store` (area-coach lookup). */
+/** Minimal fake supabase-js query builder for `user` (by email) and `store` (area-coach lookup). */
 function createFakeFrom({ usersByEmail = {}, storesByAreaCoach = {} } = {}) {
   return jest.fn((table) => {
     const state = { filters: [] };

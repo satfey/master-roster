@@ -11,7 +11,7 @@ function omitPasswordHash(user) {
 
 async function list(req, res) {
   const { data: users, error } = await supabase
-    .from('users')
+    .from('user')
     .select('*, role(*), store:store_id(*)')
     .order('full_name', { ascending: true });
   if (error) throw error;
@@ -24,7 +24,7 @@ async function create(req, res) {
 
   const passwordHash = password ? await hashPassword(password) : null;
   const { data: user, error } = await supabase
-    .from('users')
+    .from('user')
     .insert({ full_name: fullName, email, role_id: roleId, store_id: storeId || null, area_coach_id: areaCoachId || null, password_hash: passwordHash })
     .select()
     .single();
@@ -39,7 +39,7 @@ async function update(req, res) {
   const patch = { full_name: fullName, role_id: roleId, store_id: storeId, area_coach_id: areaCoachId, is_active: isActive };
   if (password) patch.password_hash = await hashPassword(password);
 
-  const { data: user, error } = await supabase.from('users').update(patch).eq('id', id).select().single();
+  const { data: user, error } = await supabase.from('user').update(patch).eq('id', id).select().single();
   if (error) throw error;
   return success(res, omitPasswordHash(user), 'User updated');
 }

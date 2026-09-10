@@ -1,6 +1,11 @@
 // Prints a bcrypt hash for a plaintext password, for pasting into a manual
-// `INSERT INTO users (..., password_hash) VALUES (..., '<hash>')` — so a
+// `INSERT INTO "user" (..., password_hash) VALUES (..., '<hash>')` — so a
 // plaintext password is never typed into a SQL query or stored anywhere.
+//
+// Note the double quotes around "user": it's a reserved word in Postgres, so
+// an unquoted `user` in raw SQL resolves to the CURRENT_USER function, not
+// this table. The Supabase client quotes identifiers itself, so application
+// code (supabase.from('user')) needs no such care — only hand-written SQL.
 //
 // Usage: node scripts/hash-password.js "the-password"
 require('dotenv').config();

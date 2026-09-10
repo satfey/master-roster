@@ -105,10 +105,10 @@ CREATE TABLE sales_validation (
 -- Richer daily sales report import (Gross/Docket/Customer actual, budget,
 -- variance, LY, and MTD figures) — a separate format/table from SALES_RECORD,
 -- fed by a fixed 26-column Excel layout matched against store."storeCode".
--- NOTE: entered_by here references `users` (plural, unquoted) to match the
--- live Supabase table, which differs from the rest of this doc's stale
--- `"user"` (singular, quoted) references elsewhere — not corrected here since
--- that's a pre-existing, unrelated inconsistency out of scope for this table.
+-- NOTE: the live table was renamed from `users` to `"user"` (see
+-- migrations/20260910_rename_users_to_user.sql), which brought it in line with
+-- the `"user"` references used throughout the rest of this doc. `user` is a
+-- reserved word in Postgres, so it stays double-quoted in all raw SQL.
 -- ----------------------------------------------------------------------------
 CREATE TABLE sales_report (
     id                            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -146,7 +146,7 @@ CREATE TABLE sales_report (
     service_charge                 NUMERIC(14, 2),
 
     source_type_id                UUID NOT NULL REFERENCES sales_source_type(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-    entered_by                     UUID REFERENCES users(id)                     ON UPDATE CASCADE ON DELETE SET NULL,
+    entered_by                     UUID REFERENCES "user"(id)                     ON UPDATE CASCADE ON DELETE SET NULL,
     created_at                     TIMESTAMP NOT NULL DEFAULT now(),
 
     UNIQUE (store_id, report_date)
@@ -171,7 +171,7 @@ CREATE TABLE sales_by_hour (
     gross_sale       NUMERIC(14, 2) NOT NULL,
 
     source_type_id   UUID NOT NULL REFERENCES sales_source_type(id) ON UPDATE CASCADE ON DELETE RESTRICT,
-    entered_by       UUID REFERENCES users(id)                      ON UPDATE CASCADE ON DELETE SET NULL,
+    entered_by       UUID REFERENCES "user"(id)                      ON UPDATE CASCADE ON DELETE SET NULL,
     created_at       TIMESTAMP NOT NULL DEFAULT now(),
 
     UNIQUE (store_id, report_month, hour)

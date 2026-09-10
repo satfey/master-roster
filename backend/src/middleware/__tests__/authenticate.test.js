@@ -10,7 +10,7 @@ const jwt = require('jsonwebtoken');
 const { signToken } = require('../../utils/jwt');
 const authenticate = require('../authenticate');
 
-/** Minimal fake supabase-js query builder: .select().eq().eq().maybeSingle() for `users`, .select().eq() (awaited directly) for `store`. */
+/** Minimal fake supabase-js query builder: .select().eq().eq().maybeSingle() for `user`, .select().eq() (awaited directly) for `store`. */
 function createFakeFrom({ usersById = {}, storesByAreaCoach = {} } = {}) {
   return jest.fn((table) => {
     const state = { filters: [] };
@@ -21,7 +21,7 @@ function createFakeFrom({ usersById = {}, storesByAreaCoach = {} } = {}) {
         return builder;
       }),
       maybeSingle: jest.fn(async () => {
-        if (table !== 'users') throw new Error(`unexpected maybeSingle() on ${table}`);
+        if (table !== 'user') throw new Error(`unexpected maybeSingle() on ${table}`);
         const idFilter = state.filters.find(([c]) => c === 'id');
         const activeFilter = state.filters.some(([c, v]) => c === 'is_active' && v === true);
         const row = idFilter ? usersById[idFilter[1]] : null;

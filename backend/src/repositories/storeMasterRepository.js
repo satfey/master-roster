@@ -4,7 +4,7 @@ const supabase = require('../config/supabase');
  * All `area_coach` rows, keyed by normalized name for matching against the
  * Excel "Zone Update" column. store.area_coach_id is a foreign key straight
  * to area_coach.id (constraint fk_store_area_coach) — Area Coaches are their
- * own entity here, not a role on `users`. A name matching more than one row
+ * own entity here, not a role on `user`. A name matching more than one row
  * is intentionally left as an array — the caller decides how to handle
  * ambiguity.
  */
