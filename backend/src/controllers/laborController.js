@@ -1,5 +1,9 @@
 const { recordActualHours, getStoreLaborSummary } = require('../services/laborService');
 const laborBudgetRepo = require('../repositories/laborBudgetRepository');
+const rosterRepo = require('../repositories/rosterRepository');
+const { previewHourlyForecast } = require('../services/forecastService');
+const { computeLaborDemand } = require('../services/laborDemandService');
+const { resolveTargetProductivity } = require('../services/laborBudgetService');
 const { success, failure } = require('../utils/apiResponse');
 const { logActivity } = require('../utils/activityLogger');
 
@@ -21,6 +25,45 @@ async function recordHours(req, res) {
     record,
     record.isOverPlanned ? 'Warning: actual hours exceed the planned shift hours' : 'Actual hours recorded'
   );
+}
+
+/**
+ * Read-only hourly labour demand for a date range: how many people each operating hour requires
+ * (the sales-independent operational minimum) and the most its forecast sales can justify.
+ *
+ * This is the SAME computation roster generation and validation are held to — it calls
+ * laborDemandService.computeLaborDemand over the real hourly forecast, resolving
+ * target_productivity exactly as rosterGenerationService does. It exists so screens can show the
+ * real demand curve instead of keeping their own copy of these numbers; it writes nothing.
+ */
+async function demand(req, res) {
+  const { storeId, from, to } = req.query;
+  if (!storeId) return failure(res, 'storeId is required', 400);
+  if (!from || !to) return failure(res, 'from and to are required (YYYY-MM-DD)', 400);
+  if (from > to) return failure(res, 'from must not be after to', 400);
+
+  const guidelineRow = await rosterRepo.findGuideline(storeId);
+  const manualTargetProductivity = guidelineRow?.target_productivity != null ? Number(guidelineRow.target_productivity) : null;
+  const productivity = await resolveTargetProductivity({ storeId, manualTargetProductivity });
+
+  const forecast = await previewHourlyForecast({ storeId, startDate: from, endDate: to });
+  const result = computeLaborDemand({
+    days: forecast.days,
+    guideline: {
+      target_productivity: productivity.value,
+      min_staff_per_shift: guidelineRow?.min_staff_per_shift ?? 0,
+    },
+  });
+
+  return success(res, {
+    storeId,
+    from,
+    to,
+    targetProductivity: productivity.value,
+    targetProductivitySource: productivity.source,
+    days: result.days,
+    warnings: result.warnings,
+  });
 }
 
 async function summary(req, res) {
@@ -87,4 +130,4 @@ async function deleteTier(req, res) {
   return success(res, null, 'Tier deleted');
 }
 
-module.exports = { recordHours, summary, listTiers, createTier, updateTier, deleteTier };
+module.exports = { demand, recordHours, summary, listTiers, createTier, updateTier, deleteTier };

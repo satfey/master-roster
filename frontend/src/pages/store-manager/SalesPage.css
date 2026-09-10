@@ -1,0 +1,50 @@
+.sales-page__chart { margin-bottom: var(--sp-3); }
+
+.sales-page__stats,
+.sales-page__hours {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.sales-stat,
+.hour-tile {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: var(--sp-3) var(--sp-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius);
+  text-align: center;
+  font-family: var(--font-thai);
+}
+
+.sales-stat__label,
+.hour-tile__label {
+  font-size: 9px;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.sales-stat__value,
+.hour-tile__value {
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 700;
+}
+
+.hour-tile__caption {
+  margin-top: 2px;
+  font-size: 8px;
+  color: var(--text-faint);
+}
+
+.sales-stat--green { border-color: #bbf7d0; }
+.sales-stat--green .sales-stat__value { color: var(--green); }
+.sales-stat--violet { border-color: #e9d5ff; }
+.sales-stat--violet .sales-stat__value { color: var(--violet); }
+.sales-stat--red { border-color: #fecaca; }
+.sales-stat--red .sales-stat__value { color: var(--red); }
+
+.hour-tile--green { border-color: #bbf7d0; }
+.hour-tile--green .hour-tile__value { color: var(--green); }
+.hour-tile--violet { border-color: #e9d5ff; }
+.hour-tile--violet .hour-tile__value { color: var(--violet); }

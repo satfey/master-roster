@@ -1,0 +1,25 @@
+.unauthorized {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  min-height: 60vh;
+  padding: var(--sp-6);
+  text-align: center;
+  color: var(--text-muted);
+  font-family: var(--font-thai);
+}
+
+.unauthorized h1 { font-size: 16px; color: var(--text-strong); }
+.unauthorized p { font-size: 12px; max-width: 34ch; }
+
+.unauthorized__link {
+  margin-top: var(--sp-2);
+  padding: 10px 20px;
+  border-radius: var(--radius-pill);
+  background: var(--navy);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+}

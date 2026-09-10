@@ -1,0 +1,127 @@
+.roster-page__toolbar {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+/* Date range picker + generate button, kept on one line until it can't fit. */
+.roster-page__range {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+}
+
+.roster-page__updating {
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-thai);
+  white-space: nowrap;
+}
+
+.roster-page__range label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-muted);
+  font-family: var(--font-thai);
+  white-space: nowrap;
+}
+
+.roster-page__range input[type='date'] {
+  font-size: 12px;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-strong);
+}
+
+.roster-page__heading {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-strong);
+  font-family: var(--font-thai);
+}
+
+.roster-page__hint {
+  margin-top: 2px;
+  font-family: var(--font-thai);
+  font-size: 9px;
+  line-height: 1.5;
+  color: var(--text-faint);
+}
+
+.roster-page__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-3);
+  margin: 0 0 var(--sp-3);
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-thai);
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.roster-page__legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.roster-page__swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+}
+
+.roster-page__swatch--full_time { background: var(--blue); }
+.roster-page__swatch--part_time { background: var(--amber); }
+.roster-page__swatch--dual_vocational { background: var(--violet); }
+
+.roster-page__actions {
+  display: flex;
+  gap: var(--sp-2);
+  margin-top: var(--sp-3);
+}
+
+.roster-page__error,
+.roster-page__notice {
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-thai);
+  font-size: 11px;
+}
+
+.roster-page__error { background: var(--red-soft); color: var(--red); }
+.roster-page__notice { background: var(--green-soft); color: #15803d; }
+
+.roster-page__blocked {
+  align-self: center;
+  font-family: var(--font-thai);
+  font-size: 10px;
+  color: var(--red);
+}
+
+.coverage-table td.is-bad { color: var(--red); font-weight: 700; }
+.coverage-table td.is-good { color: var(--green); }
+
+.roster-page__actions { flex-wrap: wrap; }
+
+/* Shown only while the range picker is pointed somewhere other than the range that was
+   generated — names that range and offers the way back to it. */
+.roster-page__generated-range {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 8px 0 0;
+  font-size: 12px;
+  font-family: var(--font-thai);
+  color: var(--text-muted);
+}

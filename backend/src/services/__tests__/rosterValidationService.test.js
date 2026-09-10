@@ -172,6 +172,27 @@ describe('rosterValidationService.validateRoster', () => {
     expect(result.status).toBe('WARNING');
   });
 
+  // The closing hour must carry CLOSING_COVERAGE_STAFF_COUNT people whatever the sales say, so
+  // obeying that rule on a quiet evening is not a surplus — reporting it as one flagged every
+  // generated day forever and buried the hours a manager could actually act on.
+  test('20b. the mandatory closing pair is never reported as overstaffing, even when sales justify only one person', async () => {
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      // Exactly the two required closers, both ending at closing time. Nobody else.
+      shifts: ['E1', 'E2'].map((id, i) =>
+        makeShift({ id: `s${i}`, employeeId: id, date: '2026-08-24', start: '18:00', end: '22:00', hours: 4, employee: makeEmployee(id) })
+      ),
+    });
+    forecastRepo.findForecastRows.mockResolvedValue(
+      Array.from({ length: 13 }, (_, i) => forecastRow('2026-08-24', 9 + i, 100)) // quiet all day -> justifies 1 head
+    );
+
+    const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    expect(result.closingCoverageOk).toBe(true);
+    expect(result.overstaffedHours).not.toContain('2026-08-24 21:00');
+  });
+
   test('21. labor cost is computed from planned hours x employee hourly wage', async () => {
     mockData({
       guideline: { target_productivity: 500, target_col_percent: 15, min_staff_per_shift: 1 },

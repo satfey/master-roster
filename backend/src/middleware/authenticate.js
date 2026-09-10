@@ -11,16 +11,41 @@ const { failure } = require('../utils/apiResponse');
  * exactly the same way.
  *
  * areaStoreIds is only ever non-empty for AREA_COACH: it's every store
- * whose area_coach_id matches this user's own area_coach_id (the FK added
- * specifically to link a login to the pre-existing area_coach lookup table
- * that store.area_coach_id already pointed to).
+ * whose area_coach_id matches the area_coach record this login resolves to
+ * (see resolveAreaCoachId).
  */
+
+/**
+ * Which area_coach record this login IS.
+ *
+ * store.area_coach_id already says which coach owns each store; what's missing is the other half
+ * of the link — the account -> coach direction. The intended column for that (user.area_coach_id,
+ * from the user-credentials migration) was never actually created in this database, and
+ * `area_coach` carries only an id and a name, so there is no email or code to join on.
+ *
+ * So: use the column when it exists, otherwise fall back to matching the account's own name
+ * against the coach's. A name that matches more than one coach resolves to NOTHING rather than
+ * picking one — an Area Coach scoped to the wrong area would silently read another region's
+ * stores, which is worse than being scoped to none and noticing.
+ */
+async function resolveAreaCoachId(userRow) {
+  if (userRow.area_coach_id) return userRow.area_coach_id;
+  if (!userRow.full_name) return null;
+
+  const { data, error } = await supabase.from('area_coach').select('id').ilike('name', userRow.full_name);
+  if (error) throw error;
+  return data && data.length === 1 ? data[0].id : null;
+}
+
 async function buildUserIdentity(userRow) {
   let areaStoreIds = [];
-  if (userRow.role?.name === 'AREA_COACH' && userRow.area_coach_id) {
-    const { data: stores, error } = await supabase.from('store').select('id').eq('area_coach_id', userRow.area_coach_id);
-    if (error) throw error;
-    areaStoreIds = stores.map((s) => s.id);
+  if (userRow.role?.name === 'AREA_COACH') {
+    const areaCoachId = await resolveAreaCoachId(userRow);
+    if (areaCoachId) {
+      const { data: stores, error } = await supabase.from('store').select('id').eq('area_coach_id', areaCoachId);
+      if (error) throw error;
+      areaStoreIds = stores.map((s) => s.id);
+    }
   }
 
   return {

@@ -33,33 +33,33 @@ function clampPartTimeHours(hours) {
   return Math.max(PART_TIME_MIN_HOURS, Math.min(PART_TIME_MAX_HOURS, Math.round(hours)));
 }
 
-function ceilingAt(hour, maxJustifiedByHour, minRequiredByHour) {
-  return Math.max(maxJustifiedByHour.get(hour) ?? 0, minRequiredByHour.get(hour) ?? 1);
-}
-
 /**
- * Sizes a Part-time shift anchored at one edge of the operating day (opening or closing) to
- * exactly the hours real demand still justifies, instead of always maxing out to whatever the
- * daily budget affords (the previous `clampPartTimeHours(max(dailyBudgetRemaining, MIN))` always
- * evaluated to 8h for any real store, forcing every PT closer to the identical 13:00 start).
- * Grows hour-by-hour away from the edge (forward from opening, backward from closing) only while
- * the next hour still has unmet room under its own ceiling (the higher of the operational minimum
- * and the productivity-justified maximum) — stops the moment it would only pad an
- * already-adequately-covered hour, never below the legal PART_TIME_MIN_HOURS floor. `maxHours`
- * (derived by the caller from the remaining daily labor-hour budget, clamped to
- * PART_TIME_MAX_HOURS) is an upper CAP only, never the target — real stores' daily budgets are
- * almost always >= 8h so this cap rarely binds and demand governs the result; a test or a
- * genuinely tight-budget day can still legitimately shrink it below what demand alone would ask
- * for. This is what lets closing shifts genuinely vary in length (13-22, 16-22, 18-22, ...) based
- * on the real hourly curve instead of every closer defaulting to 13:00-22:00.
+ * Sizes a Part-time shift anchored at one edge of the operating day (opening or closing).
+ *
+ * This is a COVERAGE shift: its job is to make sure the store is open and closed legally, not to
+ * staff up for sales. So it grows only while the next hour is still below its OPERATIONAL MINIMUM
+ * (`minRequiredByHour`), and stops as soon as the legal PART_TIME_MIN_HOURS floor is met and no
+ * further hour is actually short-handed.
+ *
+ * It deliberately does NOT grow against the productivity ceiling (`maxJustifiedByHour`). It used
+ * to, and that is what made every Part-timer a full 8-hour shift: this phase runs first, when
+ * coverage is still 0 everywhere, so "is this hour below the sales-justified ceiling?" is true for
+ * almost the whole day and the shift swallowed all of it. A store whose sales justify 2-3 people
+ * ended up with 4-5 on the floor from mid-afternoon on. Staffing ABOVE the minimum is the
+ * productivity-fill phase's job (Priority 6/7 below), which runs later, sees real coverage, and
+ * stops exactly at maxJustifiedHeadcount — so Part-timers are now brought in to top up the hours
+ * that genuinely need more people, instead of being padded out to a full quota every day.
+ *
+ * `maxHours` (derived by the caller from the remaining daily labor-hour budget, clamped to
+ * PART_TIME_MAX_HOURS) stays an upper CAP only, never the target.
  */
-function growPartTimeFromEdge({ direction, maxJustifiedByHour, minRequiredByHour, coverageByHour, maxHours = PART_TIME_MAX_HOURS }) {
+function growPartTimeFromEdge({ direction, minRequiredByHour, coverageByHour, maxHours = PART_TIME_MAX_HOURS }) {
   const step = direction === 'forward' ? 1 : -1;
   let h = direction === 'forward' ? OPERATING_HOURS.start : OPERATING_HOURS.end - 1;
   let length = 0;
   while (length < maxHours && h >= OPERATING_HOURS.start && h < OPERATING_HOURS.end) {
-    const stillNeeded = (coverageByHour[h] || 0) < ceilingAt(h, maxJustifiedByHour, minRequiredByHour);
-    if (length >= PART_TIME_MIN_HOURS && !stillNeeded) break;
+    const stillShortHanded = (coverageByHour[h] || 0) < (minRequiredByHour.get(h) ?? 1);
+    if (length >= PART_TIME_MIN_HOURS && !stillShortHanded) break;
     length++;
     h += step;
   }
@@ -74,26 +74,66 @@ function growPartTimeFromEdge({ direction, maxJustifiedByHour, minRequiredByHour
  * full 4-8h block that pads hours already at, or above, their own ceiling.
  */
 function growPartTimeWindow({ targetHour, ceilingFn, coverageByHour, maxHours }) {
+  const hasRoom = (h) =>
+    h >= OPERATING_HOURS.start && h < OPERATING_HOURS.end && (coverageByHour[h] || 0) < ceilingFn(h);
+
+  /**
+   * The clock hour a shift of `len` working hours starting at `s` runs up to (exclusive).
+   *
+   * A block longer than PART_TIME_BREAK_THRESHOLD_HOURS gains an unpaid break hour, so it ends
+   * LATER than its working length — and the employee is on the floor either side of that break.
+   * Growing by working hours alone therefore silently claimed clock hours this function had never
+   * checked for room: a 6-hour fill block starting at 15:00 ran to 22:00, not 21:00, landing on
+   * the closing hour that already had its two mandatory closers and justified only one person.
+   * Crossing the threshold (5 -> 6 working hours) widens the span by TWO clock hours at once, so
+   * the check has to be on the resulting span, never on a single next-door hour.
+   */
+  const spanEnd = (s, len) => s + partTimeClockSpanHours(len);
+
+  /** Every clock hour a candidate block would newly occupy, versus the block as it stands. */
+  const newlyOccupied = (nextStart, nextLen, start, length) => {
+    const hours = [];
+    for (let h = nextStart; h < spanEnd(nextStart, nextLen); h++) {
+      if (h < start || h >= spanEnd(start, length)) hours.push(h);
+    }
+    return hours;
+  };
+
+  const fits = (nextStart, nextLen, start, length) =>
+    nextStart >= OPERATING_HOURS.start &&
+    spanEnd(nextStart, nextLen) <= OPERATING_HOURS.end &&
+    newlyOccupied(nextStart, nextLen, start, length).every(hasRoom);
+
   let start = targetHour;
-  let end = targetHour + 1;
   let length = 1;
   while (length < maxHours) {
-    const canRight = end < OPERATING_HOURS.end && (coverageByHour[end] || 0) < ceilingFn(end);
-    const canLeft = start - 1 >= OPERATING_HOURS.start && (coverageByHour[start - 1] || 0) < ceilingFn(start - 1);
+    const nextLen = length + 1;
+    const canRight = fits(start, nextLen, start, length);
+    const canLeft = fits(start - 1, nextLen, start, length);
+
     if (length >= PART_TIME_MIN_HOURS && !canRight && !canLeft) break;
+
     if (!canRight && !canLeft) {
-      // Legal minimum not yet reached and neither neighbor has genuine room under ceilingFn —
-      // still must extend somewhere to meet PART_TIME_MIN_HOURS; forward (toward closing) is the
-      // safer default since it never risks pushing the window's start before OPERATING_HOURS.start.
-      if (end < OPERATING_HOURS.end) end++;
-      else start--;
-    } else {
-      const rightGap = canRight ? ceilingFn(end) - (coverageByHour[end] || 0) : -1;
-      const leftGap = canLeft ? ceilingFn(start - 1) - (coverageByHour[start - 1] || 0) : -1;
-      if (rightGap >= leftGap) end++;
-      else start--;
+      // Legal minimum not yet reached and neither direction has genuine room — the shift must
+      // still reach PART_TIME_MIN_HOURS, so extend anyway, preferring whichever direction stays
+      // inside operating hours. This is the one case where a block may cover an hour that is
+      // already at its ceiling: a 4-hour legal floor cannot be avoided.
+      if (spanEnd(start, nextLen) <= OPERATING_HOURS.end) length = nextLen;
+      else if (start - 1 >= OPERATING_HOURS.start) {
+        start -= 1;
+        length = nextLen;
+      } else break; // nowhere left to grow inside the operating day
+      continue;
     }
-    length++;
+
+    const rightGap = canRight ? ceilingFn(spanEnd(start, nextLen) - 1) - (coverageByHour[spanEnd(start, nextLen) - 1] || 0) : -1;
+    const leftGap = canLeft ? ceilingFn(start - 1) - (coverageByHour[start - 1] || 0) : -1;
+    if (canRight && rightGap >= leftGap) {
+      length = nextLen;
+    } else {
+      start -= 1;
+      length = nextLen;
+    }
   }
   return { start, length: clampPartTimeHours(length) };
 }
@@ -340,8 +380,20 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
   // This is a SOFT preference only — see pickEmployee below: if genuinely no
   // one else is eligible that day, the preferred-off employee is still used
   // rather than ever leaving coverage unfilled.
-  const ftEmployees = employees.filter((e) => employeeShiftType(e) === 'FULL_TIME');
   const preferredDayOffByEmployee = new Map(); // employeeId -> Set of 'YYYY-MM-DD'
+
+  // Applied to Part-time as well as Full-time. It used to run for Full-time only, which meant a
+  // store staffed mostly by Part-timers (the common case — store 1001 has 1 Full-time and 5
+  // Part-time) got no demand-aware rest days at all: everyone worked every quiet weekday, and the
+  // week's BUSIEST day was then the one nobody had capacity left for. Real data for that store:
+  // Mon-Sat each took an identical 33h while sales ranged 32,768 -> 43,656, and Sunday — the
+  // second-busiest day — got 20h. Resting people on the quiet days is what frees them for the
+  // busy ones, which is the whole point of scheduling to sales.
+  for (const group of [
+    employees.filter((e) => employeeShiftType(e) === 'FULL_TIME'),
+    employees.filter((e) => employeeShiftType(e) === 'PART_TIME'),
+  ]) {
+  const ftEmployees = group;
   if (ftEmployees.length > 1) {
     // Only meaningful with 2+ Full-time employees — with exactly one, there's no "everyone
     // gets the same day off" collision to stagger away from, and biasing their sole rest day
@@ -370,6 +422,7 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     // A trailing chunk shorter than 7 days (e.g. 3 leftover days) can never force a 7th
     // consecutive day within the requested range by itself, so it's left unstaggered — same
     // reasoning as before, just applied to the range's own remainder instead of an ISO week's.
+  }
   }
 
   const assignedDay = {}; // `${employeeId}-${date}` -> true (one shift per employee per day)
@@ -404,31 +457,35 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
         ? round2(monthlyHours * (dailyForecastValue / monthlySales))
         : dayDemand.hours.reduce((sum, h) => sum + h.requiredHeadcount, 0);
 
-    // maxJustifiedHeadcount = the ceiling the generator may staff UP TO when justified,
-    // never a target to reach. Two INDEPENDENT real-sales-derived ceilings exist and can
-    // disagree sharply:
-    //   1. laborDemandService's own per-hour ceiling, derived from target_productivity (a
-    //      manual override, or — for virtually every real store now — this store's own
-    //      historical productivity from WHR Target Import).
-    //   2. THIS DAY'S already sales-derived dailyBudgetHours (itself the monthly guideline's
-    //      share of this day's forecast), redistributed across hours by each hour's own share
-    //      of the day's forecasted sales — the same "spread a fixed pool proportional to real
-    //      sales" idea already used one level up (monthly hours -> this day's budget), carried
-    //      one level deeper (this day's budget -> this hour's ceiling).
-    // Letting whichever happens to be stricter silently win means a store with a naturally
-    // high historical productivity figure can end up far below its own monthly guideline even
-    // on a genuinely busy day, despite BOTH ceilings being legitimate, real-sales-based signals
-    // — confirmed against real data for store 1001 (target_productivity capped every day's peak
-    // hour at 2-3 heads regardless of demand, leaving ~400h/month of guideline unused that the
-    // sales-bracket table itself would have allowed). Taking the MORE PERMISSIVE of the two
-    // never invents a number and never pads beyond what either real-sales signal already
-    // justifies — it just stops one from overriding the other.
+    // maxJustifiedHeadcount = the ceiling the generator may staff UP TO when justified, never a
+    // target to reach. Two real-sales-derived signals exist:
+    //   1. the PRODUCTIVITY ceiling for the hour — floor(that hour's forecast sales /
+    //      target_productivity), floored at the operational minimum.
+    //   2. this day's share of the monthly guideline, redistributed across hours by each hour's
+    //      own share of the day's sales ("salesShapedHeadcount").
+    //
+    // The productivity ceiling wins whenever it actually says something — i.e. somewhere in the
+    // day it rises above the bare operational minimum. That is what makes the schedule track
+    // sales: quiet days stop earlier and leave staff for busy ones. Taking the more permissive of
+    // the two (the previous behaviour) meant the far more generous guideline share bound on nearly
+    // every day, so quiet and busy days could spend the same amount — real data, store 1001:
+    // productivity justified 28 person-hours on a Tuesday and 36 on a Saturday, yet Monday through
+    // Saturday each took an identical 33h while sales ranged 32,768 -> 43,656, and Sunday, the
+    // second-busiest day, was left with 20h because the quiet days had already used the staff.
+    //
+    // The guideline share is still the fallback when productivity is degenerate for the whole day
+    // — a low-volume store whose every hour floors at the minimum would otherwise have no signal
+    // to vary by at all, and every day of its week would come out identical, which is the same
+    // flatness seen from the other direction.
+    //
+    // Trade-off, chosen deliberately: a month whose guideline is more generous than productivity
+    // justifies now finishes under that guideline rather than padding days out to reach it.
+    const productivityIsInformative = dayDemand.hours.some((h) => h.maxJustifiedHeadcount > h.requiredHeadcount);
     const maxJustifiedByHour = new Map(
       dayDemand.hours.map((h) => {
-        if (dailyForecastValue <= 0) return [h.hour, h.maxJustifiedHeadcount];
+        if (productivityIsInformative || dailyForecastValue <= 0) return [h.hour, h.maxJustifiedHeadcount];
         const hourShare = h.forecastedSales / dailyForecastValue;
-        const salesShapedHeadcount = Math.floor(dailyBudgetHours * hourShare);
-        return [h.hour, Math.max(h.requiredHeadcount, h.maxJustifiedHeadcount, salesShapedHeadcount)];
+        return [h.hour, Math.max(h.requiredHeadcount, Math.floor(dailyBudgetHours * hourShare))];
       })
     );
 
@@ -497,7 +554,13 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       if (type === 'FULL_TIME' && respectPreferredDayOff) {
         return candidates.find((emp) => !preferredDayOffByEmployee.get(emp.id)?.has(date)) || null;
       }
-      return candidates[0] || null;
+      // Everywhere else the rest day is a SOFT preference: someone whose staggered rest day is
+      // today goes to the back of the queue rather than being excluded, so coverage is never left
+      // unfilled just to protect a day off — but on a quiet day, where there are spare candidates,
+      // they genuinely get the day off and stay available for the week's busier days.
+      const restingToday = (emp) => (preferredDayOffByEmployee.get(emp.id)?.has(date) ? 1 : 0);
+      const preferred = [...candidates].sort((a, b) => restingToday(a) - restingToday(b));
+      return preferred[0] || null;
     }
 
     function place(type, startHour, lengthHours, options) {
@@ -572,7 +635,6 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       const ftStart = isOpening ? OPERATING_HOURS.start : OPERATING_HOURS.end - FULL_TIME_CLOCK_SPAN_HOURS;
       const ptLength = growPartTimeFromEdge({
         direction: isOpening ? 'forward' : 'backward',
-        maxJustifiedByHour,
         minRequiredByHour,
         coverageByHour,
         maxHours: clampPartTimeHours(dailyBudgetRemaining),
@@ -707,6 +769,20 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
         coverageByHour,
         maxHours: Math.min(PART_TIME_MAX_HOURS, Math.floor(remainingDailyBudget)),
       });
+
+      // A day never takes more labour hours than its own sales justify.
+      //
+      // PART_TIME_MIN_HOURS is a legal floor, so filling one short-handed hour still costs a
+      // 4-hour shift and the surplus hours land on hours already covered. Per-hour checks alone
+      // can't see that, so every day crept past its own ceiling — and because the day loop is
+      // greedy and runs Mon-first, those surplus hours were spent out of employees' WEEKLY
+      // capacity, leaving genuinely busier days later in the week unable to staff up at all.
+      // (Real data, store 1001: Mon-Sat each took 33h against a 28h demand ceiling, while Sunday
+      // — the second-busiest day of that week — got 20h because nobody had hours left.)
+      //
+      // Capping the day's total at the sum of its own hourly ceilings keeps peak-hour fill intact
+      // (a busy day simply has a bigger ceiling to spend) while stopping quiet days from eating
+      // capacity that belongs to the week's busy ones.
       let placed = place('PART_TIME', window.start, window.length, { respectStoreCap: true });
 
       if (!placed && remainingDailyBudget >= FULL_TIME_SHIFT_HOURS) {

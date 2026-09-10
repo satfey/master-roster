@@ -42,6 +42,22 @@ export async function apiPost(path, data) {
   return parseResponse(res, !!token);
 }
 
+export async function apiPut(path, data) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", ...authHeader() },
+    body: JSON.stringify(data),
+  });
+  return parseResponse(res, !!token);
+}
+
+export async function apiDelete(path) {
+  const token = getToken();
+  const res = await fetch(`${API_BASE}${path}`, { method: "DELETE", headers: { ...authHeader() } });
+  return parseResponse(res, !!token);
+}
+
 /**
  * Uploads a file as multipart/form-data with upload progress, via XHR
  * (fetch has no cross-browser upload progress event). `fields` adds extra

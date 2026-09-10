@@ -1,0 +1,116 @@
+.roster-grid {
+  width: 100%;
+  min-width: 720px;
+  border-collapse: separate;
+  border-spacing: 4px;
+  font-family: var(--font-thai);
+}
+
+.roster-grid th {
+  font-size: 8px;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-align: center;
+  vertical-align: middle;
+}
+
+.roster-grid__staff-col {
+  width: 100px;
+  min-width: 100px;
+  text-align: left !important;
+}
+
+.roster-grid__total-col { width: 56px; min-width: 56px; }
+
+.roster-grid__name {
+  display: block;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.roster-grid__type {
+  display: inline-block;
+  margin-top: 2px;
+  padding: 1px 5px;
+  border-radius: var(--radius-pill);
+  font-size: 8px;
+  font-weight: 600;
+}
+
+.roster-grid__type--full_time { background: var(--blue-soft); color: #1d4ed8; }
+.roster-grid__type--part_time { background: var(--amber-soft); color: #b45309; }
+.roster-grid__type--dual_vocational { background: var(--violet-soft); color: #7e22ce; }
+
+.roster-grid__total {
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-strong);
+  white-space: nowrap;
+}
+
+
+/* --- Cell slots: position-based grid with a per-cell assignment editor --- */
+.roster-grid__cell {
+  position: relative;
+}
+
+.roster-grid__slot {
+  width: 100%;
+  min-height: 34px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 4px 5px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: var(--font-thai);
+  line-height: 1.2;
+}
+
+.roster-grid__slot:disabled {
+  cursor: default;
+}
+
+/* The shift's real clock times, straight from the generated shift row. The old
+   เช้า/บ่าย/เย็น buckets were a frontend label that never matched the generator's
+   actual start times, so the times themselves are now the only thing shown. */
+.roster-grid__slot-time {
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.2px;
+}
+
+.roster-grid__slot-who {
+  font-size: 9.5px;
+  opacity: 0.75;
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.roster-grid__slot.is-green { background: #dcfce7; color: #166534; }
+.roster-grid__slot.is-pink  { background: #fce7f3; color: #9d174d; }
+.roster-grid__slot.is-blue  { background: #dbeafe; color: #1e40af; }
+.roster-grid__slot.is-off   { background: transparent; color: var(--text-muted); }
+
+.roster-grid__slot.is-invalid {
+  border-color: #dc2626;
+}
+
+/* Per-day hour totals, so a manager can see the shape of the week at a glance. */
+.roster-grid__daytotals th,
+.roster-grid__daytotals td {
+  border-top: 2px solid var(--border);
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-strong);
+  text-align: center;
+  padding-top: 6px;
+}

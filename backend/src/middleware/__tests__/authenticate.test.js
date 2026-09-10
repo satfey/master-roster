@@ -10,12 +10,21 @@ const jwt = require('jsonwebtoken');
 const { signToken } = require('../../utils/jwt');
 const authenticate = require('../authenticate');
 
-/** Minimal fake supabase-js query builder: .select().eq().eq().maybeSingle() for `user`, .select().eq() (awaited directly) for `store`. */
-function createFakeFrom({ usersById = {}, storesByAreaCoach = {} } = {}) {
+/**
+ * Minimal fake supabase-js query builder: .select().eq().eq().maybeSingle() for `user`,
+ * .select().eq() (awaited directly) for `store`, .select().ilike() (awaited directly) for
+ * `area_coach`. `coaches` is a plain name -> id map; the ilike match is case-insensitive to
+ * mirror PostgREST's real ilike, so a test can prove casing does not break the name fallback.
+ */
+function createFakeFrom({ usersById = {}, storesByAreaCoach = {}, coaches = {} } = {}) {
   return jest.fn((table) => {
-    const state = { filters: [] };
+    const state = { filters: [], ilike: null };
     const builder = {
       select: jest.fn(() => builder),
+      ilike: jest.fn((col, val) => {
+        state.ilike = [col, val];
+        return builder;
+      }),
       eq: jest.fn((col, val) => {
         state.filters.push([col, val]);
         return builder;
@@ -29,6 +38,13 @@ function createFakeFrom({ usersById = {}, storesByAreaCoach = {} } = {}) {
         return { data: row, error: null };
       }),
       then(resolve, reject) {
+        if (table === 'area_coach') {
+          const wanted = String(state.ilike?.[1] ?? '').toLowerCase();
+          const matches = Object.entries(coaches)
+            .filter(([name]) => name.toLowerCase() === wanted)
+            .map(([, id]) => ({ id }));
+          return Promise.resolve({ data: matches, error: null }).then(resolve, reject);
+        }
         if (table !== 'store') return Promise.resolve({ data: [], error: null }).then(resolve, reject);
         const areaCoachFilter = state.filters.find(([c]) => c === 'area_coach_id');
         const ids = areaCoachFilter ? storesByAreaCoach[areaCoachFilter[1]] || [] : [];
@@ -170,5 +186,72 @@ describe('authenticate middleware', () => {
 
     expect(res.status).toHaveBeenCalledWith(401);
     expect(next).not.toHaveBeenCalled();
+  });
+  /**
+   * The account -> area_coach link. store.area_coach_id has always said which coach owns a store;
+   * these cover the other direction, which the `user` table has no column for in this database.
+   */
+  describe('resolving which area_coach an AREA_COACH login is', () => {
+    async function runAs(userRow, fakeFromOptions) {
+      mockFromImpl = createFakeFrom({ usersById: { 'user-1': userRow }, ...fakeFromOptions });
+      const req = makeReq(signToken({ userId: 'user-1' }));
+      const res = makeRes();
+      await authenticate(req, res, jest.fn());
+      return req.user;
+    }
+
+    test('falls back to full_name when the user row has no area_coach_id', async () => {
+      const user = await runAs(
+        makeUserRow({ role: { name: 'AREA_COACH', permissions: [] }, full_name: 'JIRASAK BUNCHUI', area_coach_id: null }),
+        { coaches: { 'JIRASAK BUNCHUI': 'ac-jirasak' }, storesByAreaCoach: { 'ac-jirasak': ['1001', '1002'] } }
+      );
+
+      expect(user.areaStoreIds).toEqual(['1001', '1002']);
+    });
+
+    test('the name fallback is case-insensitive', async () => {
+      const user = await runAs(
+        makeUserRow({ role: { name: 'AREA_COACH', permissions: [] }, full_name: 'jirasak bunchui', area_coach_id: null }),
+        { coaches: { 'JIRASAK BUNCHUI': 'ac-jirasak' }, storesByAreaCoach: { 'ac-jirasak': ['1001'] } }
+      );
+
+      expect(user.areaStoreIds).toEqual(['1001']);
+    });
+
+    test('an ambiguous name resolves to NO stores rather than guessing a coach', async () => {
+      const user = await runAs(
+        makeUserRow({ role: { name: 'AREA_COACH', permissions: [] }, full_name: 'Somchai', area_coach_id: null }),
+        { coaches: { Somchai: 'ac-a', somchai: 'ac-b' }, storesByAreaCoach: { 'ac-a': ['1001'], 'ac-b': ['2002'] } }
+      );
+
+      expect(user.areaStoreIds).toEqual([]);
+    });
+
+    test('a name matching no coach resolves to no stores', async () => {
+      const user = await runAs(
+        makeUserRow({ role: { name: 'AREA_COACH', permissions: [] }, full_name: 'Test Area Coach', area_coach_id: null }),
+        { coaches: { 'JIRASAK BUNCHUI': 'ac-jirasak' }, storesByAreaCoach: { 'ac-jirasak': ['1001'] } }
+      );
+
+      expect(user.areaStoreIds).toEqual([]);
+    });
+
+    test('an explicit area_coach_id wins over a name that points somewhere else', async () => {
+      const user = await runAs(
+        makeUserRow({ role: { name: 'AREA_COACH', permissions: [] }, full_name: 'JIRASAK BUNCHUI', area_coach_id: 'ac-explicit' }),
+        { coaches: { 'JIRASAK BUNCHUI': 'ac-jirasak' }, storesByAreaCoach: { 'ac-explicit': ['9001'], 'ac-jirasak': ['1001'] } }
+      );
+
+      expect(user.areaStoreIds).toEqual(['9001']);
+    });
+
+    test('a non-AREA_COACH whose name happens to match a coach gets NO area stores', async () => {
+      const user = await runAs(
+        makeUserRow({ role: { name: 'STORE_MANAGER', permissions: [] }, full_name: 'JIRASAK BUNCHUI', store_id: '1001' }),
+        { coaches: { 'JIRASAK BUNCHUI': 'ac-jirasak' }, storesByAreaCoach: { 'ac-jirasak': ['1001', '1002'] } }
+      );
+
+      expect(user.areaStoreIds).toEqual([]);
+    });
   });
 });

@@ -1,0 +1,58 @@
+.shift-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  width: 100%;
+  min-height: 52px;
+  padding: 6px 4px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: var(--surface-muted);
+  color: var(--text);
+  font-family: var(--font-thai);
+  transition: background-color 0.14s ease, border-color 0.14s ease;
+}
+
+.shift-btn--green { background: var(--green-soft); }
+.shift-btn--pink { background: var(--pink-soft); }
+.shift-btn--blue { background: var(--blue-soft); }
+
+.shift-btn:hover:not(.is-readonly) { border-color: var(--border-strong); }
+.shift-btn:active:not(.is-readonly) { transform: scale(0.97); }
+.shift-btn.is-readonly { cursor: default; opacity: 0.75; }
+
+.shift-btn.is-invalid {
+  border-color: var(--red);
+  box-shadow: inset 0 0 0 1px var(--red);
+}
+
+.shift-btn__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.shift-btn.is-invalid .shift-btn__label { color: var(--red); }
+
+.shift-btn__time {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.shift-btn__break {
+  font-size: 8px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.shift-btn__off {
+  font-size: 10px;
+  color: var(--text-faint);
+}

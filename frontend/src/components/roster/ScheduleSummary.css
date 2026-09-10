@@ -1,0 +1,56 @@
+.schedule-summary {
+  padding: var(--sp-4);
+  border-radius: var(--radius-lg);
+  background: var(--navy);
+  color: #fff;
+  box-shadow: var(--shadow-card);
+}
+
+.schedule-summary__head h2 {
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.schedule-summary__head p {
+  margin-top: 4px;
+  font-family: var(--font-thai);
+  font-size: 9px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+.schedule-summary__figures {
+  display: flex;
+  gap: var(--sp-3);
+  margin-top: var(--sp-4);
+}
+
+.schedule-figure {
+  flex: 1 1 0;
+  padding: var(--sp-3) var(--sp-2);
+  border-radius: var(--radius);
+  background: #fff;
+  text-align: center;
+}
+
+.schedule-figure__label {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+.schedule-figure__value {
+  margin-top: 4px;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-strong);
+}
+
+.schedule-figure__value--green { color: var(--green); }
+
+.schedule-figure__unit {
+  margin-top: 1px;
+  font-family: var(--font-thai);
+  font-size: 8px;
+  color: var(--text-faint);
+}

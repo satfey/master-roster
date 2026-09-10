@@ -1,0 +1,24 @@
+/* Full width on every device — the rows follow the page container, which is
+   what changes between mobile, tablet and desktop. */
+.settings-page {
+  width: 100%;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-4);
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.settings-row > svg:first-child { flex: 0 0 auto; }
+.settings-row > span { flex: 1; min-width: 0; }
+.settings-row > svg:last-child { flex: 0 0 auto; color: var(--text-faint); }
+.settings-row:hover { background: #fafafa; }

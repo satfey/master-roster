@@ -40,7 +40,7 @@ const rosterRepo = require('../../repositories/rosterRepository');
 const forecastRepo = require('../../repositories/forecastRepository');
 const laborBudgetRepo = require('../../repositories/laborBudgetRepository');
 const { generateDraftRoster } = require('../rosterGenerationService');
-const { operatingHourList } = require('../storeOperatingHours');
+const { operatingHourList, OPERATING_HOURS, CLOSING_COVERAGE_STAFF_COUNT } = require('../storeOperatingHours');
 
 function makeEmployee(id, overrides = {}) {
   return {
@@ -516,7 +516,10 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
     // than blindly maxing a single 8h block — landing at 20+6=26h: still an OUTPUT of
     // the optimization (bounded by the real daily budget, not exceeding it) and nowhere
     // near the 1000h monthly guideline.
-    expect(result.totalLaborHours).toBe(26);
+    // 25h, not the 26h this expected before Part-time coverage shifts were sized to the
+    // operational minimum: the second closer is now a legal-minimum block instead of being grown
+    // against the productivity ceiling while coverage was still empty.
+    expect(result.totalLaborHours).toBe(25);
     expect(result.generatedShifts).toBe(4);
     expect(result.totalLaborHours).toBeLessThan(50); // nowhere close to the 1000h monthly guideline — it is a ceiling, never a fill target
   });
@@ -530,12 +533,11 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    // Today's derived budget: 840h x (5000 / 155,000) ~= 27.1h. FT1 opens (8h); PT1 is
-    // the only eligible closer left, sized to the ~19.1h remaining, clamped to its 8h
-    // ceiling. 8+8=16h — still exactly hours x rate, no padding beyond what coverage +
-    // the sales-derived budget actually call for.
-    expect(result.totalLaborHours).toBe(16);
-    expect(result.estimatedLaborCost).toBe(16 * 50); // exactly hours x rate — no padding
+    // FT1 opens (8h); PT1 is the only eligible closer left and is now sized to the legal
+    // 4h minimum rather than being stretched toward the remaining budget — closing cover is a
+    // coverage job, not a reason to buy a full Part-time quota. 8+4=12h.
+    expect(result.totalLaborHours).toBe(12);
+    expect(result.estimatedLaborCost).toBe(12 * 50); // exactly hours x rate — no padding
   });
 
   test('monthly_labor_hours remains a hard maximum for discretionary (productivity-justified) staffing, even when a tier would otherwise allow more', async () => {
@@ -578,8 +580,46 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
     // (productivity wins whenever it's configured) would have frozen this at exactly 20h —
     // PT2 would never have been used; confirming the guideline-share ceiling is genuinely
     // what's justifying PT2 here, not productivity.
-    expect(result.totalLaborHours).toBe(26);
+    // 25h now that the second closer is a legal-minimum block; the point of the test is
+    // unchanged — PT2 is still pulled in, which only the guideline-share ceiling can justify.
+    expect(result.totalLaborHours).toBe(25);
     expect(store.shifts.some((s) => s.employee_id === 'PT2')).toBe(true);
+  });
+
+  // Regression (real data, store 1001): every generated day showed the closing hour carrying
+  // 4 people where sales justified 1 and the closing rule needs 2. Cause: growPartTimeWindow
+  // measured a fill block in WORKING hours, but a block over the 5-hour break threshold gains an
+  // unpaid hour and therefore ends one clock hour LATER than the window that was checked for room
+  // — so a 6h block grown from mid-afternoon silently ran to closing time.
+  test('a Part-time fill block long enough to need a break does not spill onto the closing hour', async () => {
+    // Mirrors store 1001's real curve: ceiling 1 early, 2 around midday, 3 through the
+    // afternoon/evening, collapsing back to 1 in the final hour.
+    const hourlySales = {
+      9: 600, 10: 600, 11: 600,
+      12: 1200, 13: 1200, 14: 1200,
+      15: 1600, 16: 1600, 17: 1600, 18: 1600, 19: 1600, 20: 1600,
+      21: 600,
+    };
+    const dailyTotal = Object.values(hourlySales).reduce((a, b) => a + b, 0);
+    mockShapedForecastHistory(dailyTotal, hourlySales);
+    const store = createFakeStore({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      employees: [makeEmployee('FT1'), ...Array.from({ length: 5 }, (_, i) => makePartTime(`PT${i}`))],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+
+    const closingHour = OPERATING_HOURS.end - 1;
+    const onFloorAtClosing = store.shifts.filter((sh) => {
+      const start = Number(sh.start_time.slice(0, 2));
+      const end = Number(sh.end_time.slice(0, 2));
+      const breakStart = sh.break_start_time ? Number(sh.break_start_time.slice(0, 2)) : null;
+      return closingHour >= start && closingHour < end && closingHour !== breakStart;
+    }).length;
+
+    // The closing hour justifies one person and the rule requires two — nothing may be added
+    // behind them just because a fill block's break pushed its end time out.
+    expect(onFloorAtClosing).toBe(CLOSING_COVERAGE_STAFF_COUNT);
   });
 
   test('conversely, a real productivity-justified opportunity is still taken even when the monthly-guideline share alone would be too tight to justify it', async () => {
@@ -596,10 +636,13 @@ describe('rosterGenerationService.generateDraftRoster — PHASE 4: productivity 
 
     const result = await generateDraftRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
-    // A 4th shift beyond the 3 mandatory (opener + 2 closers) can only be explained by
+    // Any shift beyond the 3 mandatory (opener + 2 closers) can only be explained by
     // target_productivity's higher (5-head) ceiling — the guideline-share ceiling (2) alone
     // would already be satisfied by mandatory coverage, with no gap left for discretionary fill.
-    expect(result.generatedShifts).toBe(4);
+    // Asserted as "more than mandatory" rather than an exact count: leaner mandatory coverage
+    // frees budget, so the demand-driven phase now tops up with additional short Part-time
+    // blocks instead of one pre-padded long one — which is the point of the change.
+    expect(result.generatedShifts).toBeGreaterThan(3);
     expect(result.totalLaborHours).toBeGreaterThan(24); // strictly more than mandatory-only coverage
   });
 });

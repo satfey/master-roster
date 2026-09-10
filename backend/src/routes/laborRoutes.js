@@ -277,10 +277,19 @@ const { storeScope } = require('../middleware/storeScope');
  *         $ref: '#/components/responses/ServerError'
  */
 router.get('/', authenticate, authorize('labor:view'), storeScope, laborController.summary);
+// Read-only hourly demand curve (required / productivity-justified headcount per hour),
+// so screens can show the real numbers instead of holding their own copy.
+router.get('/demand', authenticate, authorize('labor:view'), storeScope, laborController.demand);
 router.put('/', authenticate, authorize('labor:input'), laborController.recordHours);
-router.get('/tiers', authenticate, authorize('labor:view'), laborController.listTiers);
-router.post('/tiers', authenticate, authorize('labor:input'), laborController.createTier);
-router.put('/tiers/:id', authenticate, authorize('labor:input'), laborController.updateTier);
-router.delete('/tiers/:id', authenticate, authorize('labor:input'), laborController.deleteTier);
+// The Sales -> Labour Hours guideline is a chain-level policy, not a store setting: it decides
+// how many hours every store is allowed. So it gets its own two permissions rather than riding on
+// labor:view / labor:input, which a Store Manager legitimately holds for their own store's roster
+// and actual hours — with those, a Store Manager could read AND rewrite the chain's guideline.
+//   labor_guideline:view   -> Admin, Area Coach (read-only)
+//   labor_guideline:manage -> Admin only
+router.get('/tiers', authenticate, authorize('labor_guideline:view'), laborController.listTiers);
+router.post('/tiers', authenticate, authorize('labor_guideline:manage'), laborController.createTier);
+router.put('/tiers/:id', authenticate, authorize('labor_guideline:manage'), laborController.updateTier);
+router.delete('/tiers/:id', authenticate, authorize('labor_guideline:manage'), laborController.deleteTier);
 
 module.exports = router;

@@ -1,0 +1,48 @@
+.context-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: var(--context-bar-h);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--context-bar);
+}
+
+.context-bar__field {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.context-bar__field select {
+  width: 100%;
+  height: 34px;
+  padding: 0 26px 0 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 12px;
+  font-family: var(--font-thai);
+  appearance: none;
+  text-overflow: ellipsis;
+}
+
+.context-bar__field select:disabled {
+  color: var(--text);
+  opacity: 1;
+  cursor: default;
+}
+
+.context-bar__field > svg {
+  position: absolute;
+  right: 9px;
+  pointer-events: none;
+  color: var(--text-muted);
+}
+
+@media (min-width: 768px) {
+  .context-bar { padding: var(--sp-2) var(--sp-6); }
+  .context-bar__field { flex: 0 0 auto; min-width: 160px; }
+}

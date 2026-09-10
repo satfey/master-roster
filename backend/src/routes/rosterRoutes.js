@@ -54,7 +54,7 @@ const { rosterScope } = require('../middleware/rosterScope');
  * /roster/{id}:
  *   get:
  *     summary: Get a single roster with its shifts
- *     description: Unlike the other roster routes, this one only requires authentication — no permission or store-scope check is applied.
+ *     description: Requires schedule:view, and the roster must belong to a store the caller is scoped to (see middleware/rosterScope.js).
  *     tags: [Roster]
  *     parameters:
  *       - in: path
@@ -507,10 +507,13 @@ router.post('/validate', authenticate, authorize('schedule:generate'), storeScop
 router.post('/actual-hours', authenticate, authorize('labor:input'), storeScope, rosterController.recordActualHours);
 router.get('/actual-hours', authenticate, authorize('labor:view'), storeScope, rosterController.listActualHours);
 router.get('/capacity', authenticate, authorize('labor:view'), storeScope, rosterController.capacity);
-router.get('/', authenticate, authorize('schedule:generate'), storeScope, rosterController.list);
+// Reading a roster is its own permission, separate from creating one. These two GETs used to sit
+// behind schedule:generate, which meant anyone allowed to LOOK at a schedule was also allowed to
+// regenerate it — an Area Coach whose job is to review schedules could have rewritten them.
+router.get('/', authenticate, authorize('schedule:view'), storeScope, rosterController.list);
 // /:id routes are scoped by rosterScope, not storeScope — the id in the path is a roster id, so
 // the owning store has to be read from the roster itself (see middleware/rosterScope.js).
-router.get('/:id', authenticate, authorize('schedule:generate'), rosterScope, rosterController.getOne);
+router.get('/:id', authenticate, authorize('schedule:view'), rosterScope, rosterController.getOne);
 router.put('/:id', authenticate, authorize('schedule:update'), rosterScope, rosterController.update);
 router.delete('/:id', authenticate, authorize('schedule:delete'), rosterScope, rosterController.remove);
 

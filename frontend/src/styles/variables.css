@@ -1,0 +1,116 @@
+:root {
+  /* Brand — navy header / primary button, taken from the design */
+  --navy: #425267;
+  --navy-dark: #3a4a5e;
+  --navy-deep: #333f52;
+
+  /* Surfaces */
+  --app-bg: #f4f4f5;
+  --surface: #ffffff;
+  --surface-muted: #ebebeb;
+  --context-bar: #f2ede7;
+  --placeholder-bg: #ececec;
+
+  /* Text */
+  --text: #1f2733;
+  --text-strong: #111827;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+
+  /* Status */
+  --green: #16a34a;
+  --green-soft: #dcfce7;
+  --red: #dc2626;
+  --red-soft: #fee2e2;
+  --amber: #f59e0b;
+  --amber-soft: #fef3c7;
+  --violet: #a855f7;
+  --violet-soft: #f3e8ff;
+  --blue: #3b82f6;
+  --blue-soft: #dbeafe;
+  --pink-soft: #fce7f3;
+  --pink: #ec4899;
+
+  /* Lines */
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+
+  /* Radius — matches the rounded cards in the screenshots */
+  --radius-sm: 8px;
+  --radius: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Spacing */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* Elevation */
+  --shadow-card: 0 1px 3px rgba(16, 24, 40, 0.08);
+  --shadow-raised: 0 4px 12px rgba(16, 24, 40, 0.14);
+
+  /* Layout */
+  --header-h: 64px;
+  --context-bar-h: 52px;
+  --bottom-nav-h: 64px;
+  --sidebar-w: 232px;
+
+  --font-sans: 'Poppins', 'Noto Sans Thai', system-ui, -apple-system, sans-serif;
+  --font-thai: 'Noto Sans Thai', 'Poppins', system-ui, sans-serif;
+
+  /* Type scale — mobile baseline, scaled up at wider breakpoints so content
+     grows with the viewport instead of staying phone-sized on a desktop. */
+  --fs-micro: 8px;
+  --fs-tiny: 9px;
+  --fs-small: 10px;
+  --fs-body: 12px;
+  --fs-label: 13px;
+  --fs-heading: 14px;
+  --fs-figure: 22px;
+  --fs-metric: 19px;
+
+  --card-pad: var(--sp-4);
+  --page-gap: var(--sp-3);
+  --chart-h: 230px;
+}
+
+/* Tablet */
+@media (min-width: 768px) {
+  :root {
+    --fs-micro: 10px;
+    --fs-tiny: 11px;
+    --fs-small: 12px;
+    --fs-body: 13px;
+    --fs-label: 14px;
+    --fs-heading: 16px;
+    --fs-figure: 28px;
+    --fs-metric: 24px;
+
+    --card-pad: var(--sp-5);
+    --page-gap: var(--sp-4);
+    --chart-h: 300px;
+  }
+}
+
+/* Desktop */
+@media (min-width: 1200px) {
+  :root {
+    --fs-micro: 11px;
+    --fs-tiny: 12px;
+    --fs-small: 13px;
+    --fs-body: 14px;
+    --fs-label: 15px;
+    --fs-heading: 17px;
+    --fs-figure: 34px;
+    --fs-metric: 28px;
+
+    --card-pad: var(--sp-6);
+    --page-gap: var(--sp-5);
+    --chart-h: 340px;
+  }
+}

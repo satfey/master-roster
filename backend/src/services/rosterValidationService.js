@@ -204,6 +204,10 @@ async function validateRoster({ storeId, startDate, endDate }) {
         understaffedHours.push(`${date} ${pad(hour)}:00`);
         if (breakHoursByDateHour.has(key)) breakCoverageGapViolations.push(`${date} ${pad(hour)}:00`);
       }
+      // Note: the mandatory closing pair is already safe from being reported here — with
+      // OVERSTAFF_TOLERANCE = 1, CLOSING_COVERAGE_STAFF_COUNT (2) people on a closing hour that
+      // justifies 1 does not trip this check. Test 20b pins that. Raising the ceiling further for
+      // the closing hour would only start excusing a genuine third body.
       if (scheduled > maxJustified + OVERSTAFF_TOLERANCE) overstaffedHours.push(`${date} ${pad(hour)}:00`);
       if (scheduled === 0 && hour === OPERATING_HOURS.start) openingCoverageOk = false;
     }
