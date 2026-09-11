@@ -1,26 +1,29 @@
 # Deployment Guide
 
-## 1. Database — Railway PostgreSQL
+## 1. Database — Supabase
 
-1. Create a new PostgreSQL instance on Railway (or use Supabase / Neon, both have free tiers).
-2. Copy the generated `DATABASE_URL` connection string (format: `postgresql://user:password@host:5432/dbname?schema=public`).
-3. **Enable the `pgcrypto` extension** (required for `gen_random_uuid()` primary keys) — run this once via psql or your provider's SQL console:
+The backend talks to Postgres through the Supabase client, not an ORM, so there is no
+`prisma generate`/`migrate` step and no `DATABASE_URL`.
+
+1. Create a Supabase project (or use an existing one).
+2. **Enable the `pgcrypto` extension** (required for `gen_random_uuid()` primary keys) — run this once in the SQL editor:
    ```sql
    CREATE EXTENSION IF NOT EXISTS pgcrypto;
    ```
-4. From `backend/`, run migrations against it:
-   ```bash
-   DATABASE_URL="postgresql://..." npx prisma migrate deploy
-   DATABASE_URL="postgresql://..." npm run seed
-   ```
+3. Apply the SQL files in `backend/migrations/` in filename order, via the Supabase SQL editor.
+
+   There is no seed step. Real data comes in through the import screens (Store Master,
+   Employee Master, Sales Report, Sales by Hour, WHR Target); the roles and user accounts
+   are created by hand, with `npm run hash-password "<password>"` for the `password_hash`
+   column. Nothing in this repo writes invented business data to a database.
 
 ## 2. Backend — Render
 
 1. New "Web Service" pointing at the `backend/` folder of this repo.
-2. Build command: `npm install && npx prisma generate`
+2. Build command: `npm install`
 3. Start command: `npm start`
-4. Environment variables: `DATABASE_URL`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `CORS_ORIGIN` (set to your Vercel frontend URL), `BCRYPT_SALT_ROUNDS`, `NODE_ENV=production`.
-5. After first deploy, run `npx prisma migrate deploy` via Render's shell (or a one-off job) to apply migrations in production.
+4. Environment variables: `SUPABASE_URL`, `SUPABASE_SECRET_KEY`, `JWT_SECRET`, `JWT_EXPIRES_IN`, `CORS_ORIGIN` (set to your Vercel frontend URL), `BCRYPT_SALT_ROUNDS`, `NODE_ENV=production`.
+5. New migrations are applied through the Supabase SQL editor, not from the server.
 
 ## 3. Frontend — Vercel
 

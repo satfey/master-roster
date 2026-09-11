@@ -42,7 +42,8 @@ This is a **decision-support system, not a payroll system**.
 ```
 master-roster/
 ├── backend/
-│   ├── prisma/            # schema.prisma, seed.js
+│   ├── migrations/        # plain .sql files, applied via the Supabase SQL editor
+│   ├── scripts/           # hash-password, forecast:accuracy, coverage diagnostics (no seed — see §Setup)
 │   ├── src/
 │   │   ├── controllers/   # thin request/response handlers
 │   │   ├── services/      # business logic (forecast, roster, labor, dashboard, import)
@@ -91,12 +92,17 @@ GUI like pgAdmin/TablePlus.)
 
 ```bash
 cd backend
-cp .env.example .env        # set DATABASE_URL to your postgresql:// connection string
 npm install
-npx prisma migrate dev --name init
-npm run seed                 # creates roles, source types, a demo store + guideline + users + employees
+# .env needs: SUPABASE_URL, SUPABASE_SECRET_KEY, JWT_SECRET, JWT_EXPIRES_IN,
+#             BCRYPT_SALT_ROUNDS, CORS_ORIGIN, PORT
 npm run dev                  # http://localhost:4000  (Swagger: /api-docs)
 ```
+
+There is no seed step, by design. This repo never writes invented business data to a
+database: stores, employees and sales all arrive through the import screens, and user
+accounts are created by hand using `npm run hash-password "<password>"` to produce the
+`password_hash` value. Schema changes are the `.sql` files in `backend/migrations/`,
+applied in filename order through the Supabase SQL editor.
 
 ### Frontend
 
