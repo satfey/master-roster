@@ -3,6 +3,7 @@ const laborController = require('../controllers/laborController');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 const { storeScope } = require('../middleware/storeScope');
+const { shiftScope } = require('../middleware/shiftScope');
 
 /**
  * @swagger
@@ -280,7 +281,8 @@ router.get('/', authenticate, authorize('labor:view'), storeScope, laborControll
 // Read-only hourly demand curve (required / productivity-justified headcount per hour),
 // so screens can show the real numbers instead of holding their own copy.
 router.get('/demand', authenticate, authorize('labor:view'), storeScope, laborController.demand);
-router.put('/', authenticate, authorize('labor:input'), laborController.recordHours);
+// shiftScope, not storeScope: this request names a shift, never a store — see middleware/shiftScope.js.
+router.put('/', authenticate, authorize('labor:input'), shiftScope, laborController.recordHours);
 // The Sales -> Labour Hours guideline is a chain-level policy, not a store setting: it decides
 // how many hours every store is allowed. So it gets its own two permissions rather than riding on
 // labor:view / labor:input, which a Store Manager legitimately holds for their own store's roster

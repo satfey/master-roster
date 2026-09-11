@@ -80,13 +80,17 @@ describe('rosterScope — ownership check for /roster/:id (the id is a roster id
     expect(supabase.from).not.toHaveBeenCalled(); // short-circuits before the query
   });
 
-  test('EXECUTIVE is unrestricted', async () => {
+  // ADMIN is the only unrestricted role — see storeScope's own test for why that list is closed.
+  test('SECURITY: an unknown role (EXECUTIVE, which has no row in `role`) reaches no roster', async () => {
+    rosterBelongsTo('1001');
     const req = makeReq({ role: 'EXECUTIVE' });
+    const res = makeRes();
     const next = jest.fn();
 
-    await rosterScope(req, makeRes(), next);
+    await rosterScope(req, res, next);
 
-    expect(next).toHaveBeenCalledTimes(1);
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(403);
   });
 
   test('AREA_COACH is allowed a roster in one of their assigned stores', async () => {

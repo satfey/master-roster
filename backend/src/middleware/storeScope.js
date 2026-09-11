@@ -3,14 +3,20 @@ const { failure } = require('../utils/apiResponse');
 /**
  * Restricts access to store-scoped resources based on role:
  * - STORE_MANAGER: only their own store
- * - AREA_COACH: only stores assigned to them (area_coach_id on Store)
- * - EXECUTIVE / ADMIN: unrestricted (company-wide)
+ * - AREA_COACH: only stores assigned to them (store.area_coach_id)
+ * - ADMIN: unrestricted (company-wide)
+ *
+ * ADMIN is the ONLY unrestricted role, and that list is deliberately closed. An earlier version
+ * also granted 'EXECUTIVE' company-wide access, but no such role exists in the `role` table — so
+ * the moment anyone created one (for, say, a read-only executive dashboard) it would have silently
+ * come with unrestricted access to every store's data and writes, without that ever being
+ * reviewed. A new role now starts with no store access and has to be added here on purpose.
  */
 function storeScope(req, res, next) {
   const { role, storeId, areaStoreIds } = req.user;
   const targetStoreId = req.params.id || req.params.storeId || req.query.storeId || req.body?.storeId || null;
 
-  if (role === 'ADMIN' || role === 'EXECUTIVE') return next();
+  if (role === 'ADMIN') return next();
 
   if (role === 'STORE_MANAGER') {
     if (targetStoreId && targetStoreId !== storeId) {
@@ -31,7 +37,7 @@ function storeScope(req, res, next) {
 
 /** Returns allowed store ids for `.in('id', ...)` filtering; null = no restriction. */
 function getAllowedStoreIds(user) {
-  if (user.role === 'ADMIN' || user.role === 'EXECUTIVE') return null;
+  if (user.role === 'ADMIN') return null;
   if (user.role === 'STORE_MANAGER') return user.storeId ? [user.storeId] : [];
   if (user.role === 'AREA_COACH') return user.areaStoreIds;
   return [];

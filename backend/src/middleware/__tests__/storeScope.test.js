@@ -76,15 +76,30 @@ describe('storeScope', () => {
     expect(next).toHaveBeenCalledTimes(1);
   });
 
-  test('ADMIN and EXECUTIVE are unrestricted regardless of target store', () => {
-    for (const role of ['ADMIN', 'EXECUTIVE']) {
+  test('ADMIN is unrestricted regardless of target store', () => {
+    const req = makeReq({ role: 'ADMIN', storeId: '1001', params: { id: '9999' } });
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  // ADMIN is the only unrestricted role, and the list is closed on purpose: a role nobody has
+  // reviewed must not inherit company-wide access just by existing. 'EXECUTIVE' is the concrete
+  // case — it used to be hardcoded as unrestricted here while no such row existed in `role`, so
+  // creating one would have silently handed out access to every store.
+  test('SECURITY: a role that is not one of the three known ones gets NO access, not blanket access', () => {
+    for (const role of ['EXECUTIVE', 'AUDITOR', '', null]) {
       const req = makeReq({ role, storeId: '1001', params: { id: '9999' } });
       const res = makeRes();
       const next = jest.fn();
 
       storeScope(req, res, next);
 
-      expect(next).toHaveBeenCalledTimes(1);
+      expect(next).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(403);
     }
   });
 
@@ -111,9 +126,14 @@ describe('storeScope', () => {
 });
 
 describe('getAllowedStoreIds', () => {
-  test('ADMIN/EXECUTIVE get null (unrestricted)', () => {
+  test('ADMIN gets null (unrestricted)', () => {
     expect(getAllowedStoreIds({ role: 'ADMIN' })).toBeNull();
-    expect(getAllowedStoreIds({ role: 'EXECUTIVE' })).toBeNull();
+  });
+
+  test('SECURITY: an unknown role gets [] (nothing), never null (everything)', () => {
+    for (const role of ['EXECUTIVE', 'AUDITOR', undefined]) {
+      expect(getAllowedStoreIds({ role })).toEqual([]);
+    }
   });
 
   test('STORE_MANAGER gets a single-element array of their own store', () => {

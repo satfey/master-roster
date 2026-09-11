@@ -16,14 +16,14 @@ const { getAllowedStoreIds } = require('./storeScope');
  * own, so a check performed after the fact would already have mutated another store's roster.
  *
  * Mirrors storeScope's rule via the same getAllowedStoreIds(): null = unrestricted
- * (ADMIN/EXECUTIVE), otherwise the roster's store must be one the caller is allowed to touch.
+ * (ADMIN only — see storeScope), otherwise the roster's store must be one the caller may touch.
  */
 async function rosterScope(req, res, next) {
   const rosterId = req.params.id;
   if (!rosterId) return failure(res, 'Roster id is required', 400);
 
   const allowedStoreIds = getAllowedStoreIds(req.user);
-  if (allowedStoreIds === null) return next(); // ADMIN / EXECUTIVE — unrestricted
+  if (allowedStoreIds === null) return next(); // ADMIN — unrestricted
 
   const { data: roster, error } = await supabase.from('roster').select('store_id').eq('id', rosterId).maybeSingle();
   if (error) return next(error);

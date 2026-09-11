@@ -1,4 +1,4 @@
-const { chunk, runInBatches, DEFAULT_BATCH_SIZE, DEFAULT_PAGE_SIZE } = require('../batchQuery');
+const { chunk, runInBatches, fetchAllRows, DEFAULT_BATCH_SIZE, DEFAULT_PAGE_SIZE } = require('../batchQuery');
 
 describe('chunk', () => {
   test('splits an array into groups of the given size, last group short', () => {
@@ -141,5 +141,57 @@ describe('runInBatches', () => {
       await runInBatches([1], queryFn, 100);
       expect(queryFn.mock.calls[0][1]).toEqual({ from: 0, to: 999 });
     });
+  });
+});
+
+describe('fetchAllRows — unfiltered reads, which have no value list to batch but the same row cap', () => {
+  /** A fake table of `total` rows that honours .range(from, to) exactly as PostgREST does. */
+  const table = (total) =>
+    jest.fn(async ({ from, to }) => ({
+      data: Array.from({ length: total }, (_, i) => ({ i })).slice(from, to + 1),
+      error: null,
+    }));
+
+  test('a table smaller than one page is read in a single request', async () => {
+    const queryFn = table(840);
+    const rows = await fetchAllRows(queryFn);
+    expect(rows).toHaveLength(840);
+    expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
+  test('REGRESSION: a table larger than the cap is read in full, not truncated to one page', async () => {
+    const queryFn = table(21200);
+    const rows = await fetchAllRows(queryFn);
+    // The bug this replaces returned exactly DEFAULT_PAGE_SIZE rows with no error.
+    expect(rows).toHaveLength(21200);
+    expect(rows).not.toHaveLength(DEFAULT_PAGE_SIZE);
+  });
+
+  test('paging asks for consecutive, non-overlapping ranges', async () => {
+    const queryFn = table(2500);
+    await fetchAllRows(queryFn, 1000);
+    expect(queryFn.mock.calls.map(([r]) => [r.from, r.to])).toEqual([[0, 999], [1000, 1999], [2000, 2999]]);
+  });
+
+  test('a table that is an exact multiple of the page size still terminates', async () => {
+    const queryFn = table(2000);
+    const rows = await fetchAllRows(queryFn, 1000);
+    expect(rows).toHaveLength(2000);
+    expect(queryFn).toHaveBeenCalledTimes(3); // the third page comes back empty and ends the loop
+  });
+
+  test('an empty table returns [] after one request', async () => {
+    const queryFn = table(0);
+    expect(await fetchAllRows(queryFn)).toEqual([]);
+    expect(queryFn).toHaveBeenCalledTimes(1);
+  });
+
+  test('an error on a later page is thrown, never silently dropped', async () => {
+    const queryFn = jest.fn(async ({ from }) =>
+      from === 0
+        ? { data: Array.from({ length: 1000 }, (_, i) => ({ i })), error: null }
+        : { data: null, error: { message: 'boom' } }
+    );
+    await expect(fetchAllRows(queryFn, 1000)).rejects.toEqual({ message: 'boom' });
   });
 });

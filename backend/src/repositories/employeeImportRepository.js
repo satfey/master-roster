@@ -1,17 +1,17 @@
 const supabase = require('../config/supabase');
-const { runInBatches } = require('../utils/batchQuery');
+const { runInBatches, fetchAllRows } = require('../utils/batchQuery');
 
 /**
  * Fetches every store for in-memory Location resolution (by store.id or
  * store.name — the Employee Master "Location" column isn't guaranteed to
  * hold one or the other, see employeeImportService). The store table is a
- * few hundred rows, so one full fetch is simpler and safer than guessing
- * which of id/name to filter by and batching accordingly.
+ * store table, so one full read is simpler and safer than guessing which of
+ * id/name to filter by and batching accordingly. Paged all the same: the table
+ * is at 840 rows against PostgREST's silent 1000-row cap, and an import that
+ * quietly stopped seeing the last stores would reject their rows as unknown.
  */
 async function findAllStores() {
-  const { data, error } = await supabase.from('store').select('id, name');
-  if (error) throw error;
-  return data;
+  return fetchAllRows(({ from, to }) => supabase.from('store').select('id, name').range(from, to));
 }
 
 /**

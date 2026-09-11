@@ -3,6 +3,7 @@ const employeeController = require('../controllers/employeeController');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
 const { storeScope } = require('../middleware/storeScope');
+const { employeeScope } = require('../middleware/employeeScope');
 
 /**
  * @swagger
@@ -218,8 +219,10 @@ const { storeScope } = require('../middleware/storeScope');
  *         $ref: '#/components/responses/ServerError'
  */
 router.get('/', authenticate, storeScope, employeeController.list);
-router.post('/', authenticate, authorize('employee:manage'), employeeController.create);
-router.put('/:id', authenticate, authorize('employee:manage'), employeeController.update);
-router.delete('/:id', authenticate, authorize('employee:manage'), employeeController.remove);
+// POST carries storeId in the body, which storeScope already resolves. PUT/DELETE address an
+// EMPLOYEE id, which storeScope would misread as a store id — see middleware/employeeScope.js.
+router.post('/', authenticate, authorize('employee:manage'), storeScope, employeeController.create);
+router.put('/:id', authenticate, authorize('employee:manage'), employeeScope, employeeController.update);
+router.delete('/:id', authenticate, authorize('employee:manage'), employeeScope, employeeController.remove);
 
 module.exports = router;

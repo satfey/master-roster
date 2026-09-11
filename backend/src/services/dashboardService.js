@@ -8,13 +8,24 @@ const { computeAllowedHours } = require('./laborGuidelineHelpers');
  * actual/forecast, planned/actual labor hours, labor %, and productivity
  * (sales generated per actual labor hour).
  *
- * This computes live from SalesRecord/SalesForecast/Shift/ActualHours rather
+ * This computes live from sales_report/SalesForecast/Shift/ActualHours rather
  * than reading KpiSnapshot, so it's always current. A scheduled job could
  * write daily KpiSnapshot rows from this same calculation if you want cached
  * historical snapshots later.
  */
 async function getStoreProductivity({ storeId, from, to }) {
-  let salesQuery = supabase.from('sales_record').select('*').eq('store_id', storeId).order('sales_date', { ascending: true });
+  // sales_report, not sales_record: the Sales Report Excel import writes the former (118,052 rows
+  // chain-wide) and nothing writes the latter, which has been empty — so every KPI derived from
+  // sales here (salesActual, laborPercent's counterpart, productivity) read zero regardless of the
+  // store or the date range. Aliased to the same sales_date/amount names the rest of this function
+  // and the response's `series` already use, and null gross_actual rows (future/budget rows with
+  // no actual reported yet) are excluded so they can't dilute the totals as zero-baht days.
+  let salesQuery = supabase
+    .from('sales_report')
+    .select('sales_date:report_date, amount:gross_actual')
+    .eq('store_id', storeId)
+    .not('gross_actual', 'is', null)
+    .order('report_date', { ascending: true });
   // daypart = 'FULL_DAY' only — see laborService.js for why hourly forecast
   // breakdown rows must not be summed on top of the daily total.
   let forecastQuery = supabase
@@ -25,12 +36,12 @@ async function getStoreProductivity({ storeId, from, to }) {
     .order('forecast_date', { ascending: true });
   let shiftQuery = supabase.from('shift').select('*, actual_hours(*), roster!inner(store_id)').eq('roster.store_id', storeId);
   if (from) {
-    salesQuery = salesQuery.gte('sales_date', from);
+    salesQuery = salesQuery.gte('report_date', from);
     forecastQuery = forecastQuery.gte('forecast_date', from);
     shiftQuery = shiftQuery.gte('shift_date', from);
   }
   if (to) {
-    salesQuery = salesQuery.lte('sales_date', to);
+    salesQuery = salesQuery.lte('report_date', to);
     forecastQuery = forecastQuery.lte('forecast_date', to);
     shiftQuery = shiftQuery.lte('shift_date', to);
   }

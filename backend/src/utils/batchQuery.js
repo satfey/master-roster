@@ -65,4 +65,18 @@ async function runInBatches(values, queryFn, batchSize = DEFAULT_BATCH_SIZE, pag
   return perBatchResults.flat();
 }
 
-module.exports = { chunk, runInBatches, DEFAULT_BATCH_SIZE, DEFAULT_PAGE_SIZE };
+/**
+ * Pages an UNFILTERED query to its real end.
+ *
+ * runInBatches exists for `.in(column, values)` reads, where the value list is what has to be
+ * split up. A read with no such filter has nothing to batch, but it is subject to the very same
+ * DEFAULT_PAGE_SIZE row cap — and without an explicit .range() PostgREST simply returns the first
+ * page with no error and no flag, so a caller that wanted "every row" silently gets 1000 of them.
+ *
+ * `queryFn({ from, to })` must apply `.range(from, to)` and resolve to `{ data, error }`.
+ */
+async function fetchAllRows(queryFn, pageSize = DEFAULT_PAGE_SIZE) {
+  return fetchAllPages((_batch, range) => queryFn(range), null, pageSize);
+}
+
+module.exports = { chunk, runInBatches, fetchAllPages, fetchAllRows, DEFAULT_BATCH_SIZE, DEFAULT_PAGE_SIZE };

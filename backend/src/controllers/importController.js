@@ -1,21 +1,7 @@
 const { importStores } = require('../services/importService');
-const { previewSalesImport, commitSalesImport } = require('../services/salesImport/salesImportService');
 const { importGeneric } = require('../services/genericImport/genericImportService');
 const { success, failure } = require('../utils/apiResponse');
 const { logActivity } = require('../utils/activityLogger');
-
-async function salesImportPreview(req, res) {
-  if (!req.file) return failure(res, 'No file uploaded', 400);
-  const result = await previewSalesImport(req.file.buffer);
-  return success(res, result, 'Preview generated');
-}
-
-async function salesImport(req, res) {
-  if (!req.file) return failure(res, 'No file uploaded', 400);
-  const result = await commitSalesImport(req.file.buffer);
-  await logActivity({ userId: req.user.id, action: 'IMPORT_EXCEL', details: { type: 'SALES', ...result } });
-  return success(res, result, 'Sales data imported');
-}
 
 async function storeImport(req, res) {
   if (!req.file) return failure(res, 'No file uploaded', 400);
@@ -46,4 +32,4 @@ async function genericImport(req, res) {
   return res.status(result.success ? 201 : 422).json(result);
 }
 
-module.exports = { salesImportPreview, salesImport, storeImport, genericImport };
+module.exports = { storeImport, genericImport };

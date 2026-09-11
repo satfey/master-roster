@@ -100,19 +100,66 @@ async function getOne(req, res) {
   return success(res, roster);
 }
 
+/**
+ * Reassigns who covers shifts in a roster (and optionally moves the roster's status).
+ *
+ * SECURITY: every shift update is constrained by `.eq('roster_id', id)` as well as the shift's own
+ * id. rosterScope has already proven the caller may touch THIS roster, but it says nothing about
+ * the shift ids in the body — without the roster_id filter a Store Manager could PUT their own
+ * roster while passing a shift id belonging to another store's roster and have it reassigned,
+ * which would defeat rosterScope entirely. A shift id that isn't in this roster now matches zero
+ * rows and is reported rather than silently ignored.
+ *
+ * employee_id is checked the same way: an employee may only be assigned to a shift in a roster
+ * belonging to that employee's own store, so a reassignment cannot pull staff across stores.
+ */
 async function update(req, res) {
   const { status, shifts } = req.body;
   const id = req.params.id;
 
-  const { data: roster, error } = await supabase.from('roster').update({ status }).eq('id', id).select().single();
+  // Only touch `status` when the caller actually sent one — this endpoint's main use is
+  // reassigning shifts, and those requests carry no status.
+  const rosterPatch = status === undefined ? {} : { status };
+  const { data: roster, error } = Object.keys(rosterPatch).length
+    ? await supabase.from('roster').update(rosterPatch).eq('id', id).select().single()
+    : await supabase.from('roster').select('*').eq('id', id).single();
   if (error) throw error;
 
-  if (Array.isArray(shifts)) {
+  if (Array.isArray(shifts) && shifts.length) {
+    const employeeIds = [...new Set(shifts.map((s) => s.employeeId).filter(Boolean))];
+    if (employeeIds.length) {
+      const { data: ownEmployees, error: employeeError } = await supabase
+        .from('employee')
+        .select('id')
+        .eq('store_id', roster.store_id)
+        .in('id', employeeIds);
+      if (employeeError) throw employeeError;
+
+      const ownEmployeeIds = new Set(ownEmployees.map((e) => e.id));
+      const foreign = employeeIds.filter((employeeId) => !ownEmployeeIds.has(employeeId));
+      if (foreign.length) {
+        return failure(res, `Employee not in this roster's store: ${foreign.join(', ')}`, 403);
+      }
+    }
+
     for (const s of shifts) {
-      const { error: shiftError } = await supabase.from('shift').update({ employee_id: s.employeeId }).eq('id', s.id);
+      const { data: updated, error: shiftError } = await supabase
+        .from('shift')
+        .update({ employee_id: s.employeeId })
+        .eq('id', s.id)
+        .eq('roster_id', id)
+        .select('id');
       if (shiftError) throw shiftError;
+      if (!updated.length) return failure(res, `Shift ${s.id} does not belong to this roster`, 403);
     }
   }
+
+  await logActivity({
+    userId: req.user.id,
+    action: 'UPDATE_ROSTER',
+    storeId: roster.store_id,
+    details: { rosterId: id, status, shiftCount: Array.isArray(shifts) ? shifts.length : 0 },
+  });
 
   return success(res, roster, 'Roster updated');
 }

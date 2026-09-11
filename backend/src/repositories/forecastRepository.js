@@ -1,4 +1,5 @@
 const supabase = require('../config/supabase');
+const { fetchAllRows } = require('../utils/batchQuery');
 
 /** Daily actuals for a store — the source for day-of-week / daily-total seasonality (sales_report.report_date has real per-day granularity; sales_by_hour.report_month does not). */
 async function findDailySalesHistory(storeId, { before } = {}) {
@@ -24,11 +25,18 @@ async function findHourlySalesHistory(storeId) {
   return data;
 }
 
-/** Fallback source when a store has no sales_by_hour history of its own — every store's hourly history, used to build a chain-wide average shape. */
+/**
+ * Fallback source when a store has no sales_by_hour history of its own — every store's hourly
+ * history, used to build a chain-wide average shape.
+ *
+ * Paged, because this is the one read here with no filter at all: PostgREST's 1000-row cap applied
+ * silently and the "chain-wide" shape was actually built from whatever arbitrary 1000 of the
+ * table's rows came back first (measured: 1000 of 21,200 — under 5%, and unordered). That skewed
+ * the resulting curve toward the evening and lost the lunch peak and the closing hours entirely,
+ * for every store falling back to it.
+ */
 async function findAllHourlySalesHistory() {
-  const { data, error } = await supabase.from('sales_by_hour').select('store_id, hour, gross_sale');
-  if (error) throw error;
-  return data;
+  return fetchAllRows(({ from, to }) => supabase.from('sales_by_hour').select('store_id, hour, gross_sale').range(from, to));
 }
 
 async function createModelRun(modelVersion) {
