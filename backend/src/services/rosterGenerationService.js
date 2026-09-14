@@ -183,6 +183,48 @@ function buildShiftRow({ employeeId, date, startHour, lengthHours, type, breakSt
 }
 
 /**
+ * Where to start a discretionary Full-time shift so its 8 working hours land on the hours that
+ * most need people.
+ *
+ * The fill phases used to compute `clamp(targetHour - 4)` — a fixed offset that ignores the rest
+ * of the curve, so an 8h shift pulled in for a 19:00 peak started at 15:00 and spent its first
+ * hours on already-covered afternoon hours while the evening stayed short. Here every legal start
+ * (one that keeps the whole 9-hour clock span inside operating hours) is scored by the unmet
+ * demand its WORKING hours would actually absorb, capped per hour at the real remaining gap so
+ * over-covering one hour can never look better than covering two.
+ *
+ * The break hour is excluded from the score: the employee is not on the floor then, which is
+ * precisely the assumption the coverage tally makes when the shift is placed.
+ */
+function chooseFullTimeStartHour({ targetHour, ceilingByHour, coverageByHour }) {
+  const latestStart = OPERATING_HOURS.end - FULL_TIME_CLOCK_SPAN_HOURS;
+  let best = null;
+
+  for (let start = OPERATING_HOURS.start; start <= latestStart; start++) {
+    const breakHour = start + Math.round((validBreakOffsets(FULL_TIME_SHIFT_HOURS)[0] + validBreakOffsets(FULL_TIME_SHIFT_HOURS).slice(-1)[0]) / 2);
+    let score = 0;
+    let coversTarget = false;
+    for (let h = start; h < start + FULL_TIME_CLOCK_SPAN_HOURS; h++) {
+      if (h === breakHour) continue;
+      if (h === targetHour) coversTarget = true;
+      score += Math.max(0, (ceilingByHour.get(h) ?? 1) - (coverageByHour[h] || 0));
+    }
+    const candidate = { start, score, coversTarget };
+    if (
+      best == null ||
+      candidate.score > best.score ||
+      // An equal-scoring placement that actually spans the hour this fill was triggered for is
+      // the better one — it is the hour the caller already proved needs somebody.
+      (candidate.score === best.score && candidate.coversTarget && !best.coversTarget)
+    ) {
+      best = candidate;
+    }
+  }
+
+  return best.start;
+}
+
+/**
  * Decides WHERE (not whether) a shift's break falls, among every legally valid offset
  * (validBreakOffsets — every split keeping both segments <= 5 consecutive hours). Returns null
  * when no break applies at all (a short Part-time shift). Priority order, matching the business
@@ -230,6 +272,162 @@ function chooseBreakStartHour({ startHour, lengthHours, dayDemand, minRequiredBy
     }
   }
   return best.hour;
+}
+
+/**
+ * Two forecasts are "similar enough" that sales should stop deciding between them, and the
+ * existing balancing rule takes over. 2% is deliberately tight: a genuinely quieter day must win
+ * on sales alone, and only near-identical days fall through to balancing.
+ */
+const SIMILAR_DEMAND_TOLERANCE = 0.02;
+
+/**
+ * How much busier than the quietest AVAILABLE weekday a Saturday or Sunday has to be before it is
+ * pushed into the protected tier and effectively taken off the table. 5% rather than 0, so a
+ * weekend day that is genuinely as quiet as the weekdays stays an ordinary candidate — the rule is
+ * "protect a BUSY weekend", never "a weekend can never be a rest day".
+ */
+const WEEKEND_PROTECTION_MARGIN = 0.05;
+
+const WEEKEND_DAYS = new Set([0, 6]); // Sunday, Saturday
+
+function isWeekendDate(date) {
+  return WEEKEND_DAYS.has(new Date(`${date}T00:00:00Z`).getUTCDay());
+}
+
+/**
+ * Whether this employee is a Store Manager / Team Lead, read from the existing employee.position
+ * metadata — never a name, never a hardcoded id. The real values in this data set are exactly
+ * 'Store Manager' (292 employees), 'Service Staff' (184) and 'Team Lead' (11); 'supervisor' is
+ * matched too so a future title does not silently fall through to the non-manager path.
+ */
+function isManagerRole(employee) {
+  return /manager|team\s*lead|supervisor/i.test(employee.position || '');
+}
+
+/**
+ * Chooses each employee's preferred weekly rest date from the real forecast.
+ *
+ * WHAT WAS WRONG ORIGINALLY. Rest days were handed out by round-robin: the week's dates were
+ * sorted by forecast ascending and employee `i` took index `i % 7`. That walks UP the sales
+ * ranking, so a six-Full-timer store deliberately rested people on its 5th- and 6th-quietest days.
+ * Measured against the real forecast for the week of 2026-09-21 across ten stores, it put a
+ * Full-timer's rest day on a Sunday whose demand ranked 3rd of 7 — with four lower-demand weekdays
+ * sitting available.
+ *
+ * THE SELECTION IS NOW LEXICOGRAPHIC, in the business's own priority order:
+ *
+ *   1. HARD CONSTRAINTS — not decided here. Weekly/monthly hour caps and the 6-consecutive-day
+ *      rule live in pickEmployee's eligibility filter, which this can never override: what this
+ *      function produces is a PREFERENCE, and coverage always wins over it.
+ *   2. AVOID A HIGH-DEMAND WEEKEND — a Saturday or Sunday more than WEEKEND_PROTECTION_MARGIN
+ *      busier than the quietest available weekday is pushed into a protected tier, and no
+ *      protected day is chosen while an unprotected one still has room. This is a TIER rather than
+ *      a weight precisely so no sales difference, however small, can buy its way past it.
+ *   3/4. AVOID A HIGH-DEMAND DAY IN GENERAL / PREFER LOWER SALES — within a tier, quieter first.
+ *   5. PRESERVE COVERAGE — capacity(date) = groupSize - workersNeeded(date), taken from the
+ *      production manpower rule already computed for this run (the peak sales-independent
+ *      requiredHeadcount across that day's hours, or CLOSING_COVERAGE_STAFF_COUNT, whichever is
+ *      larger). Rest fills the quietest day up to that, and only then moves on.
+ *   6. FAIRNESS LAST — only days within SIMILAR_DEMAND_TOLERANCE of each other count as tied, and
+ *      only then does balancing (fewest rests so far, then earliest date) decide. Fairness can
+ *      never overrule sales protection.
+ *
+ * Managers and Team Leads are served FIRST, so they claim the quietest rest days and are
+ * consequently on the floor for the busy ones. Their role comes from employee.position.
+ *
+ * Chunked by the REQUESTED RANGE's own 7-day cycles, not by ISO week: what forces everyone's hand
+ * onto the same date is FULL_TIME_MAX_CONSECUTIVE_DAYS, a calendar streak independent of any week
+ * boundary. A trailing chunk shorter than 7 days cannot force a 7th consecutive working day within
+ * the range on its own, so it is left unassigned.
+ *
+ * `warnings` collects the one case the business asked to be told about explicitly: a weekend rest
+ * day taken anyway because every weekday alternative was already at capacity.
+ *
+ * Returns Map<employeeId, Set<'YYYY-MM-DD'>>. Pure apart from appending to `warnings`.
+ */
+function chooseDayOffDates({ group, laborDemandDays, warnings = [] }) {
+  const preferred = new Map();
+  if (group.length === 0 || laborDemandDays.length < 7) return preferred;
+
+  const demandByDate = new Map(laborDemandDays.map((d) => [d.date, d.hours.reduce((sum, h) => sum + h.forecastedSales, 0)]));
+  const workersNeededByDate = new Map(
+    laborDemandDays.map((d) => [d.date, Math.max(CLOSING_COVERAGE_STAFF_COUNT, ...d.hours.map((h) => h.requiredHeadcount))])
+  );
+  const allDates = laborDemandDays.map((d) => d.date);
+
+  // Managers and Team Leads choose first; relative order is otherwise preserved.
+  const ordered = [...group].sort((a, b) => (isManagerRole(b) ? 1 : 0) - (isManagerRole(a) ? 1 : 0));
+
+  for (let chunkStart = 0; chunkStart + 7 <= allDates.length; chunkStart += 7) {
+    const chunkDates = allDates.slice(chunkStart, chunkStart + 7);
+    const capacity = new Map(
+      chunkDates.map((d) => [d, Math.max(1, group.length - (workersNeededByDate.get(d) ?? CLOSING_COVERAGE_STAFF_COUNT))])
+    );
+    const restsAssigned = new Map(chunkDates.map((d) => [d, 0]));
+
+    // The bar a weekend day must beat: the quietest weekday in this chunk. If the chunk contains
+    // no weekday at all, nothing is protected — there would be no alternative to protect it for.
+    const weekdayDemands = chunkDates.filter((d) => !isWeekendDate(d)).map((d) => demandByDate.get(d) || 0);
+    const quietestWeekday = weekdayDemands.length ? Math.min(...weekdayDemands) : null;
+    const isProtectedWeekend = (date) =>
+      isWeekendDate(date) &&
+      quietestWeekday !== null &&
+      (demandByDate.get(date) || 0) > quietestWeekday * (1 + WEEKEND_PROTECTION_MARGIN);
+
+    const rank = (date) => ({ tier: isProtectedWeekend(date) ? 1 : 0, demand: demandByDate.get(date) || 0 });
+
+    for (const emp of ordered) {
+      const hasRoom = (d) => restsAssigned.get(d) < capacity.get(d);
+      const unprotected = chunkDates.filter((d) => !isProtectedWeekend(d));
+
+      // Priority 2 (avoid a high-demand weekend) outranks Priority 5 (preserve coverage), so the
+      // candidate pool is built in that order:
+      //   a. an unprotected day that still has rest capacity — the normal case;
+      //   b. failing that, an unprotected day OVER its capacity. Capacity is a soft coverage
+      //      heuristic, not a hard constraint: exceeding it only risks the rest day not actually
+      //      materialising, because pickEmployee pulls a resting employee back in whenever
+      //      coverage needs them. Resting someone on the busiest day of the week instead would be
+      //      a real business loss. Without this step, once all five weekdays hit capacity the
+      //      pool fell through to Saturday and Sunday — measured: FT=8 with requiredHeadcount=10
+      //      put one rest day on a 32,000 Saturday and another on a 35,000 Sunday while Thursday
+      //      (14,000) could have absorbed both;
+      //   c. only if the cycle contains no unprotected day at all does a protected weekend day
+      //      become a candidate, and that is reported below.
+      let pool;
+      if (unprotected.some(hasRoom)) pool = unprotected.filter(hasRoom);
+      else if (unprotected.length) pool = unprotected;
+      else pool = chunkDates.filter(hasRoom).length ? chunkDates.filter(hasRoom) : chunkDates;
+
+      const sorted = [...pool].sort((a, b) => {
+        const ra = rank(a);
+        const rb = rank(b);
+        return ra.tier - rb.tier || ra.demand - rb.demand;
+      });
+
+      const best = rank(sorted[0]);
+      const tied = sorted.filter((d) => {
+        const r = rank(d);
+        if (r.tier !== best.tier) return false;
+        if (best.demand === 0) return r.demand === 0;
+        return (r.demand - best.demand) / best.demand <= SIMILAR_DEMAND_TOLERANCE;
+      });
+      tied.sort((a, b) => restsAssigned.get(a) - restsAssigned.get(b) || (a < b ? -1 : 1));
+      const chosen = tied[0];
+
+      if (isProtectedWeekend(chosen)) {
+        warnings.push(
+          `${chosen}: rest day assigned to employee ${emp.id} on a high-demand weekend day (forecast ${Math.round(demandByDate.get(chosen)).toLocaleString()}) because every weekday alternative in this 7-day cycle was already at rest capacity.`
+        );
+      }
+
+      restsAssigned.set(chosen, restsAssigned.get(chosen) + 1);
+      if (!preferred.has(emp.id)) preferred.set(emp.id, new Set());
+      preferred.get(emp.id).add(chosen);
+    }
+  }
+
+  return preferred;
 }
 
 /**
@@ -367,62 +565,26 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     monthlyForecastedSalesByMonth[mk] = await computeMonthlyForecastedSales({ storeId, monthKey: mk });
   }
 
-  // --- Full-time day-off staggering ---------------------------------------
-  // Every Full-time employee at a store that's structurally active every day
-  // (e.g. one opens, another closes) accumulates their 48h/week cap in
-  // lockstep — both reach it on the exact same date — so without an explicit
-  // assignment they'd all land their one weekly rest day on that same date
-  // (whichever falls 7th in the ISO week), leaving the store's busiest day
-  // (often a weekend) staffed by Part-time alone. Each Full-time employee
-  // instead gets a PREFERRED rest day per ISO week, staggered across the
-  // group and biased toward that week's lowest-demand day first (so the
-  // group's rest days land on quiet days before ever touching a busy one).
-  // This is a SOFT preference only — see pickEmployee below: if genuinely no
-  // one else is eligible that day, the preferred-off employee is still used
-  // rather than ever leaving coverage unfilled.
-  const preferredDayOffByEmployee = new Map(); // employeeId -> Set of 'YYYY-MM-DD'
-
+  // --- Sales-driven rest-day selection ------------------------------------
+  // Every employee at a store that's structurally active every day accumulates their weekly hour
+  // cap in lockstep, so without an explicit assignment they'd all land their one weekly rest day
+  // on the same date — leaving the store's busiest day short-staffed. Each employee instead gets a
+  // PREFERRED rest date per 7-day cycle, chosen from the REAL forecast (chooseDayOffDates below).
+  //
+  // This is a SOFT preference — see pickEmployee: if genuinely nobody else is eligible, the
+  // resting employee is still used rather than ever leaving coverage unfilled.
+  //
   // Applied to Part-time as well as Full-time. It used to run for Full-time only, which meant a
-  // store staffed mostly by Part-timers (the common case — store 1001 has 1 Full-time and 5
-  // Part-time) got no demand-aware rest days at all: everyone worked every quiet weekday, and the
-  // week's BUSIEST day was then the one nobody had capacity left for. Real data for that store:
-  // Mon-Sat each took an identical 33h while sales ranged 32,768 -> 43,656, and Sunday — the
-  // second-busiest day — got 20h. Resting people on the quiet days is what frees them for the
-  // busy ones, which is the whole point of scheduling to sales.
+  // store staffed mostly by Part-timers got no demand-aware rest days at all: everyone worked
+  // every quiet weekday, and the week's BUSIEST day was the one nobody had capacity left for.
+  const preferredDayOffByEmployee = new Map(); // employeeId -> Set of 'YYYY-MM-DD'
   for (const group of [
     employees.filter((e) => employeeShiftType(e) === 'FULL_TIME'),
     employees.filter((e) => employeeShiftType(e) === 'PART_TIME'),
   ]) {
-  const ftEmployees = group;
-  if (ftEmployees.length > 1) {
-    // Only meaningful with 2+ Full-time employees — with exactly one, there's no "everyone
-    // gets the same day off" collision to stagger away from, and biasing their sole rest day
-    // toward a specific low-demand weekday would just be an unrequested behavior change.
-    //
-    // Chunked by the REQUESTED RANGE's own 7-day cycles (day 1-7, 8-14, ...), not by ISO
-    // week (Monday-Sunday) — the thing that actually forces everyone's hand on the same date
-    // is FULL_TIME_MAX_CONSECUTIVE_DAYS (a calendar-day streak, tracked independently of any
-    // week boundary): a group of Full-time employees who all start working on the same date
-    // all hit their 6th consecutive day, and get blocked from a 7th, on the exact same date —
-    // regardless of whether that date happens to be a Sunday. Tying this to ISO weeks instead
-    // meant staggering only ever engaged for a range that happened to start on a Monday and
-    // run exactly 7/14/21... days; any other range (e.g. "the next 7 days" starting today)
-    // silently skipped every partial week and every employee converged on the same day off.
-    const demandByDate = new Map(laborDemand.days.map((d) => [d.date, d.hours.reduce((sum, h) => sum + h.forecastedSales, 0)]));
-    const allDates = laborDemand.days.map((d) => d.date);
-    for (let chunkStart = 0; chunkStart + 7 <= allDates.length; chunkStart += 7) {
-      const chunkDates = allDates.slice(chunkStart, chunkStart + 7);
-      const sortedByDemandAsc = [...chunkDates].sort((a, b) => (demandByDate.get(a) || 0) - (demandByDate.get(b) || 0));
-      ftEmployees.forEach((emp, i) => {
-        const preferredDate = sortedByDemandAsc[i % sortedByDemandAsc.length];
-        if (!preferredDayOffByEmployee.has(emp.id)) preferredDayOffByEmployee.set(emp.id, new Set());
-        preferredDayOffByEmployee.get(emp.id).add(preferredDate);
-      });
+    for (const [employeeId, dates] of chooseDayOffDates({ group, laborDemandDays: laborDemand.days, warnings })) {
+      preferredDayOffByEmployee.set(employeeId, dates);
     }
-    // A trailing chunk shorter than 7 days (e.g. 3 leftover days) can never force a 7th
-    // consecutive day within the requested range by itself, so it's left unstaggered — same
-    // reasoning as before, just applied to the range's own remainder instead of an ISO week's.
-  }
   }
 
   const assignedDay = {}; // `${employeeId}-${date}` -> true (one shift per employee per day)
@@ -435,6 +597,9 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     const mk = monthKey(date);
     // requiredHeadcount = operational minimum (sales-independent, never a target to chase upward).
     const minRequiredByHour = new Map(dayDemand.hours.map((h) => [h.hour, h.requiredHeadcount]));
+    // The hour-by-hour forecast itself, used to break ties toward the busier hour when two hours
+    // are equally short-handed. Straight from the production forecast — nothing recomputed here.
+    const salesByHour = new Map(dayDemand.hours.map((h) => [h.hour, h.forecastedSales]));
 
     const dailyForecastValue = dayDemand.hours.reduce((sum, h) => sum + h.forecastedSales, 0);
     // The daily labor_hour_guideline_tier bracket table is no longer used to SIZE
@@ -714,7 +879,7 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
         });
         let placed = place('PART_TIME', window.start, window.length, { respectStoreCap: false });
         if (!placed) {
-          const ftStart = Math.min(Math.max(hour - 4, OPERATING_HOURS.start), OPERATING_HOURS.end - FULL_TIME_CLOCK_SPAN_HOURS);
+          const ftStart = chooseFullTimeStartHour({ targetHour: hour, ceilingByHour: minRequiredByHour, coverageByHour });
           placed = place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: false });
         }
         if (!placed) {
@@ -747,12 +912,20 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
     // of the optimization, never padded to hit the daily/monthly guideline.
     let remainingDailyBudget = dailyBudgetHours - hoursUsedToday;
     while (remainingDailyBudget >= PART_TIME_MIN_HOURS) {
+      // Largest staffing gap first; on an EQUAL gap the busier hour wins. Without the sales
+      // tiebreak this loop kept the first hour it saw, so a 10:00 and an 19:00 hour with the same
+      // gap always resolved to 10:00 — discretionary manpower drifted to the start of the day
+      // regardless of where the sales actually were.
       let targetHour = null;
       let bestGap = 0;
+      let bestSales = -1;
       for (const hour of operatingHourList()) {
         const gap = (maxJustifiedByHour.get(hour) ?? 1) - (coverageByHour[hour] || 0);
-        if (gap > bestGap) {
+        if (gap <= 0) continue;
+        const sales = salesByHour.get(hour) ?? 0;
+        if (gap > bestGap || (gap === bestGap && sales > bestSales)) {
           bestGap = gap;
+          bestSales = sales;
           targetHour = hour;
         }
       }
@@ -786,7 +959,7 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       let placed = place('PART_TIME', window.start, window.length, { respectStoreCap: true });
 
       if (!placed && remainingDailyBudget >= FULL_TIME_SHIFT_HOURS) {
-        const ftStart = Math.min(Math.max(targetHour - 4, OPERATING_HOURS.start), OPERATING_HOURS.end - FULL_TIME_CLOCK_SPAN_HOURS);
+        const ftStart = chooseFullTimeStartHour({ targetHour, ceilingByHour: maxJustifiedByHour, coverageByHour });
         placed = place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: true });
       }
 
@@ -844,6 +1017,10 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
 
 module.exports = {
   generateDraftRoster,
+  chooseDayOffDates,
+  isManagerRole,
+  SIMILAR_DEMAND_TOLERANCE,
+  WEEKEND_PROTECTION_MARGIN,
   employeeShiftType,
   weeklyCapFor,
   FULL_TIME_SHIFT_HOURS,
