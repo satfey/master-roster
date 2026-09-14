@@ -10,6 +10,7 @@
     "seed": "node scripts/seed.js",
     "hash-password": "node scripts/hash-password.js",
     "forecast:accuracy": "node scripts/forecast-accuracy.js",
+    "roster:quality": "node scripts/roster-quality.js",
     "test": "jest"
   },
   "dependencies": {
