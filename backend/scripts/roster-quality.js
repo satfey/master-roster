@@ -1,13 +1,4 @@
-/**
- * Roster quality evaluator — answers the 9 "is this roster actually good" questions numerically,
- * for real stores against the real forecast.
- *
- * READ-ONLY: runs the real generateDraftRoster with only the persistence boundary redirected into
- * memory, so every scheduling decision is production code and nothing is written to the database.
- *
- * The key metric is DEMAND ALIGNMENT, not constraint satisfaction. Constraints passing is Tier 1;
- * this measures Tier 2 and Tier 3.
- */
+
 require('dotenv').config();
 
 const rosterRepo = require('../src/repositories/rosterRepository');
@@ -56,7 +47,7 @@ function coverageAt(shifts, date, hour) {
   }).length;
 }
 
-/** Pearson correlation — how closely one series tracks another. */
+
 function correlation(xs, ys) {
   const n = xs.length;
   if (n < 2) return null;
@@ -112,20 +103,7 @@ async function evaluate(storeId, startDate, endDate) {
   return { storeId, days, ftCount: ftIds.length, mgrCount: mgrIds.size, ftIds, mgrIds, ptIds, shifts, warnings: result.warnings, validation: result.validation };
 }
 
-/**
- * Manager / Team Lead specific view.
- *
- * Kept separate from the aggregate Q-numbers because management coverage on a busy day is its own
- * business requirement, and because the aggregate hid a real defect once already: it only counted
- * employees who worked exactly 6 of 7 days, so a manager who was barely scheduled at all — the
- * actual failure mode — was invisible to it.
- *
- * The two are distinguished deliberately:
- *   - a DESIGNATED rest day (manager at full quota, exactly one day off) is a scheduling CHOICE,
- *     and a high-demand weekend one is a defect;
- *   - more than one non-working day is SURPLUS CAPACITY — the store has more Full-time managers
- *     than its demand supports — which is a utilisation question, not a rest-day choice.
- */
+
 function reportManagers(runs) {
   let designatedWeekendViolations = 0;
   let atQuota = 0;
@@ -163,19 +141,14 @@ function reportManagers(runs) {
     }
   }
 
-  // ---- M7/M8/M9 48h compliance, split by role -----------------------------
-  // Split because the two answer different questions: M7 is "is management actually being
-  // staffed", M8 is "did prioritising management cost anyone else their hours".
+
   let mgrAtQuota = 0;
   let mgrTotal = 0;
   let staffAtQuota = 0;
   let staffTotal = 0;
-  // ---- surplus classification --------------------------------------------
-  // An under-quota Full-timer is SURPLUS, not a scheduling failure, when the store's scheduled
-  // person-hours already meet what its own forecast justifies: adding them could only overstaff.
-  // This is why M4/M7 are not expected to reach 100% and must never be forced there.
+
   const surplusStores = [];
-  // ---- M11 management cover during the busiest hours ----------------------
+
   let peakHourSlots = 0;
   let peakHourWithManager = 0;
 
@@ -209,7 +182,7 @@ function reportManagers(runs) {
       });
     }
 
-    // Top-quartile sales hours for THIS store, and whether a manager was on the floor.
+
     const allHrs = r.days.flatMap((d) => d.hourRows.map((h) => ({ ...h, date: d.date })));
     const cut = [...allHrs].sort((a, b) => b.sales - a.sales).slice(0, Math.ceil(allHrs.length / 4));
     for (const h of cut) {
@@ -257,12 +230,12 @@ function score(runs) {
   const allHours = allDays.flatMap((d) => d.hourRows);
   const pct = (n, d) => (d ? `${Math.round((n / d) * 100)}%` : 'n/a');
 
-  // Q8 — does scheduled manpower follow the sales curve?
+
   const dayCorrs = runs.map((r) => correlation(r.days.map((d) => d.sales), r.days.map((d) => d.hours))).filter((c) => c !== null);
   const hourCorrs = runs.flatMap((r) => r.days.map((d) => correlation(d.hourRows.map((h) => h.sales), d.hourRows.map((h) => h.scheduled)))).filter((c) => c !== null);
   const mean = (l) => (l.length ? l.reduce((a, b) => a + b, 0) / l.length : 0);
 
-  // Q1 — FT coverage on high vs low sales days (per store, top-2 vs bottom-2 days)
+
   let ftHigh = 0;
   let ftLow = 0;
   let mgrHigh = 0;
@@ -277,7 +250,7 @@ function score(runs) {
     mgrHigh += mean(high.map((d) => d.mgr));
   }
 
-  // Q2/Q3 — designated rest days (FT that worked exactly 6 of 7)
+
   const rests = [];
   for (const r of runs) {
     const byDemandAsc = [...r.days].sort((a, b) => a.sales - b.sales).map((d) => d.date);
@@ -289,22 +262,19 @@ function score(runs) {
     }
   }
 
-  // Q4/Q7 — hourly alignment, split by sales quartile
+
   const sortedHours = [...allHours].sort((a, b) => b.sales - a.sales);
   const q = Math.ceil(sortedHours.length / 4);
   const topQ = sortedHours.slice(0, q);
   const botQ = sortedHours.slice(-q);
   const shortfall = (l) => l.reduce((s, h) => s + Math.max(0, h.ceiling - h.scheduled), 0);
   const excess = (l) => l.reduce((s, h) => s + Math.max(0, h.scheduled - h.ceiling), 0);
-  // Excess at the opening hour and the closing hour is MANDATORY: OPEN>=1 and CLOSE>=2 are Tier-1
-  // constraints that outrank demand efficiency, and several stores have no sales_by_hour history
-  // at 21:00 at all, so their forecast reads zero there while the store is still open and legally
-  // needs two closers. Counting that as waste would be measuring the hierarchy working correctly.
+
   const isMandatoryHour = (h) => h.hour === OPERATING_HOURS.start || h.hour >= OPERATING_HOURS.end - 2;
   const mandatoryExcess = (l) => excess(l.filter(isMandatoryHour));
   const discretionaryExcess = (l) => excess(l.filter((h) => !isMandatoryHour(h)));
 
-  // Q9 — hard constraints
+
   const openOk = allDays.every((d) => d.hourRows.find((h) => h.hour === OPERATING_HOURS.start).scheduled >= 1);
   const midOk = allHours.every((h) => h.scheduled >= 1);
   const closeOk = runs.every((r) =>

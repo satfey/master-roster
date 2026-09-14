@@ -1,30 +1,4 @@
-#!/usr/bin/env node
-/**
- * Standalone, read-only sales forecast accuracy report — run manually from a terminal (or VS
- * Code's "Run" on this file) to independently inspect how accurate the daily sales forecast
- * actually is against real reported sales.
- *
- *   npm run forecast:accuracy -- --from=2026-02-01 --to=2026-07-31
- *   npm run forecast:accuracy -- --from=2026-02-01 --to=2026-07-31 --store=1001
- *   npm run forecast:accuracy -- --month=2026-06
- *   npm run forecast:accuracy -- --from=2026-02-01 --to=2026-07-31 --csv=forecast-accuracy.csv
- *
- * READ-ONLY: this script only ever calls .select() against Supabase. It never inserts, updates,
- * upserts, or deletes anything, and never calls any production write path (roster generation, the
- * forecast persistence endpoints, etc.) — it's pure analysis over data that already exists.
- *
- * METHODOLOGY: this does NOT reimplement a different forecasting model. It calls the real,
- * current production function — forecastService.computeDailyForecast(dailyHistory, targetDate) —
- * directly, so whatever this script measures is exactly what the production forecast (weekday +
- * bounded recency weighting + bounded momentum, as of whenever this script is run) would have
- * produced. If that function ever changes, this script's results change with it automatically —
- * there is nothing forecast-related to keep in sync by hand.
- *
- * ROLLING-ORIGIN, NO LOOK-AHEAD: for every candidate test date, the "history" handed to
- * computeDailyForecast is filtered to report_date STRICTLY BEFORE that date. A date's own actual
- * sales — or any later date's — are never part of the history used to forecast it. This mirrors
- * exactly how the real system forecasts a future date from whatever history exists so far.
- */
+
 
 require('dotenv').config();
 const fs = require('fs');
@@ -55,13 +29,7 @@ const { weekdayOf } = require('../src/utils/dateRange');
 
 const WEEKDAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 
-/**
- * The manpower-decision phase makes hundreds of sequential real network calls (guideline +
- * productivity + hourly shape, per store, one store after another). Over a run lasting several
- * minutes this occasionally hits a single transient `fetch failed` (a dropped connection, not a
- * data problem) that would otherwise kill the whole batch. Retries only the read-only call itself,
- * with a short backoff -- no change to what is read or how it's read on success.
- */
+
 async function withRetry(fn, { retries = 4, baseDelayMs = 1000 } = {}) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
@@ -76,7 +44,6 @@ async function withRetry(fn, { retries = 4, baseDelayMs = 1000 } = {}) {
   throw lastErr;
 }
 
-// --- CLI argument parsing (no dependency — this project's scripts/ don't use one) -------------
 
 function parseArgs(argv) {
   const args = {};
@@ -109,17 +76,7 @@ function resolveEvaluationWindow(args) {
   return { from: args.from, to: args.to };
 }
 
-// --- Read-only data loading ---------------------------------------------------------------------
 
-/**
- * Every sales_report row (store_id, report_date, gross_actual) for the relevant store(s), with NO
- * date restriction — a test date near the start of the evaluation window still needs its full
- * history from before the window to forecast correctly, so this can't just load the window itself.
- * Uses forecastRepository.findDailySalesHistory (the same function production forecasting calls)
- * when a single store is requested; falls back to a direct, paginated read of the same table for
- * the chain-wide case, since the repository has no bulk "every store" query today — still the same
- * table, same columns, same read-only Supabase client production already uses.
- */
 async function loadSalesHistory(storeId) {
   if (storeId) {
     const rows = await forecastRepo.findDailySalesHistory(storeId); // no `before` -> full history
@@ -129,8 +86,7 @@ async function loadSalesHistory(storeId) {
   const pageSize = 1000;
   let from = 0;
   const rows = [];
-  // Supabase caps an unbounded .select() at 1000 rows by default -- must paginate explicitly or
-  // silently lose rows on any table this size (confirmed the hard way earlier in this project).
+
   while (true) {
     const { data, error } = await supabase
       .from('sales_report')
@@ -152,14 +108,7 @@ async function loadStoreNames(storeIds) {
   return new Map((data || []).map((s) => [s.id, s.name]));
 }
 
-/**
- * The real per-store labor guideline production sizing actually uses: manually-set
- * target_productivity when present, otherwise the store's own real historical WHR Target
- * productivity (resolveTargetProductivity — the exact function rosterGenerationService.js calls),
- * plus min_staff_per_shift straight from the labor_guideline row. Not a new resolution rule —
- * this is the same precedence rosterGenerationService.js applies before calling
- * laborDemandService.computeHourlyLaborDemand.
- */
+
 async function resolveEffectiveGuideline(storeId) {
   const guideline = await withRetry(() => rosterRepo.findGuideline(storeId));
   const manualTargetProductivity = guideline?.target_productivity != null ? Number(guideline.target_productivity) : null;
@@ -170,13 +119,7 @@ async function resolveEffectiveGuideline(storeId) {
   };
 }
 
-/**
- * The real per-store hour-of-day shape, with the exact same fallback hierarchy
- * generateHourlyForecast itself uses: the store's own sales_by_hour history -> a chain-wide shape
- * (loaded once, shared across every store that needs the fallback) -> an equal split across
- * operating hours. `chainRows` is loaded once by the caller and passed in, since it's the same
- * data for every store that falls back to it.
- */
+
 async function resolveHourShape(storeId, chainRows) {
   const operatingHours = operatingHourList();
   let shape = computeHourShape(await withRetry(() => forecastRepo.findHourlySalesHistory(storeId)), operatingHours);
@@ -185,22 +128,7 @@ async function resolveHourShape(storeId, chainRows) {
   return shape;
 }
 
-// --- Core evaluation: real, read-only rolling-origin backtest against production forecasting ---
 
-/**
- * Runs the rolling-origin evaluation for one store's already-sorted (ascending), null-free
- * sales history, returning one row per valid test point in [fromDate, toDate].
- *
- * A test point is "valid" when:
- *   - its own report_date falls inside the requested evaluation window
- *   - its own gross_actual is not null (nulls are already filtered out of `history` below) and not
- *     0 (a genuine, reported zero-sales day is a real history point, but dividing by it to get a
- *     percentage error is undefined -- excluded from percentage-error math the same way this
- *     project's own accuracy checks have consistently excluded it)
- *   - computeDailyForecast, given only the history strictly before that date, actually produced a
- *     grounded forecast (source !== 'NO_HISTORY') -- a date with nothing at all to forecast from
- *     isn't a meaningful accuracy data point
- */
 function evaluateStore(storeId, sortedHistory, fromDate, toDate) {
   const rows = [];
   for (const point of sortedHistory) {
@@ -221,48 +149,43 @@ function evaluateStore(storeId, sortedHistory, fromDate, toDate) {
       actual,
       forecast,
       absolute_error: absoluteError,
-      ape: (absoluteError / actual) * 100, // Absolute Percentage Error for this one point
-      signed_error_pct: ((forecast - actual) / actual) * 100, // signed -- keeps over- vs under-forecast direction, unlike APE
-      forecast_source: result.source, // STORE_WEEKDAY_AVERAGE or STORE_DAILY_AVERAGE (NO_HISTORY points are already excluded above)
+      ape: (absoluteError / actual) * 100, 
+      signed_error_pct: ((forecast - actual) / actual) * 100, 
+      forecast_source: result.source, 
       history_sample_count: result.samples,
     });
   }
   return rows;
 }
 
-// --- Metrics -------------------------------------------------------------------------------------
-// Every metric here is computed only from the rows handed to it -- callers slice `rows` by
-// month/store/weekday/segment first, so the same functions serve the overall summary and every
-// breakdown below without duplicating the arithmetic.
 
-/** MAPE -- Mean Absolute Percentage Error: the average, across every point, of how far off the forecast was as a percentage of the actual. The single most common accuracy headline number, but sensitive to a handful of very small-actual days having huge APEs. */
 function mape(rows) {
   return average(rows.map((r) => r.ape));
 }
 
-/** Median APE -- the MIDDLE absolute percentage error, not the average. Far less sensitive than MAPE to a few extreme outlier days, so a large gap between MAPE and Median APE is itself a signal that a small number of bad points are dragging MAPE up. */
+
 function medianApe(rows) {
   return median(rows.map((r) => r.ape));
 }
 
-/** Bias -- the average SIGNED percentage error. Positive means the forecast tends to overshoot actual sales on average; negative means it tends to undershoot. Unlike MAPE (which only measures magnitude), Bias reveals systematic direction -- e.g. a model that's "accurate" on average but always high in the morning and low in the evening would still show near-zero Bias, so Bias is a summary signal, not a substitute for the breakdowns below. */
+
 function bias(rows) {
   return average(rows.map((r) => r.signed_error_pct));
 }
 
-/** WAPE -- Weighted Absolute Percentage Error: total absolute error divided by total actual sales, both summed across every point first. Unlike MAPE (which weights every DAY equally regardless of size), WAPE effectively weights every DOLLAR/BAHT equally -- a big store's errors count more toward WAPE than a tiny store's, which is usually the more decision-relevant view for labor/inventory planning. */
+
 function wape(rows) {
   const sumAbsError = rows.reduce((s, r) => s + r.absolute_error, 0);
   const sumActual = rows.reduce((s, r) => s + r.actual, 0);
   return sumActual > 0 ? (sumAbsError / sumActual) * 100 : 0;
 }
 
-/** % of points whose APE exceeds 20% -- how often the forecast is off by more than a fairly generous, still-usable margin. */
+
 function pctOver20(rows) {
   return rows.length ? (rows.filter((r) => r.ape > 20).length / rows.length) * 100 : 0;
 }
 
-/** % of points whose APE exceeds 50% -- how often the forecast is off by more than half the actual value: a genuinely bad miss, not just noise. */
+
 function pctOver50(rows) {
   return rows.length ? (rows.filter((r) => r.ape > 50).length / rows.length) * 100 : 0;
 }
@@ -290,7 +213,6 @@ function summarize(rows) {
   };
 }
 
-// --- Console formatting ---------------------------------------------------------------------------
 
 function pct(n) {
   return `${n.toFixed(2)}%`;
@@ -316,7 +238,6 @@ function printSummaryBlock(title, s) {
   console.log(`  Negative forecasts: ${s.negativeForecasts}`);
 }
 
-// --- CSV export -------------------------------------------------------------------------------
 
 const CSV_COLUMNS = [
   'store_id',
@@ -348,19 +269,7 @@ function round2(n) {
   return Math.round(n * 100) / 100;
 }
 
-// --- Manpower decision accuracy: console formatting -------------------------------------------
 
-/**
- * records: every manpower-decision record produced this run (both CONFIGURED and
- * UNCONFIGURED_PRODUCTIVITY stores). coverage: computeCoverageSummary's output over every ACTIVE
- * store this run touched (regardless of whether that store produced any classified hours).
- *
- * The PRIMARY metrics (classification + staffing outcome) are computed ONLY over
- * evaluation_status === CONFIGURED records via computePrimaryKpi -- a store with no resolvable
- * target_productivity has a constant, demand-independent headcount series (see
- * manpowerDecisionAccuracy.js's module doc comment) and must never be scored as if its trivial
- * agreement were a correct forecast-driven decision.
- */
 function printClassificationSummary(records, coverage) {
   const kpi = computePrimaryKpi(records);
 
@@ -438,7 +347,7 @@ const MANPOWER_CSV_COLUMNS = [
   'headcount_error',
   'understaffed',
   'overstaffed',
-  'evaluation_status', // CONFIGURED or UNCONFIGURED_PRODUCTIVITY -- rows tagged UNCONFIGURED_PRODUCTIVITY are excluded from every printed primary KPI and must be filtered out by any downstream analysis too
+  'evaluation_status',
 ];
 
 function writeManpowerCsv(filePath, records, storeNames) {
@@ -450,7 +359,6 @@ function writeManpowerCsv(filePath, records, storeNames) {
   fs.writeFileSync(filePath, lines.join('\n'));
 }
 
-// --- Main ----------------------------------------------------------------------------------------
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
@@ -487,7 +395,7 @@ async function main() {
   console.log(`Stores:            ${byStore.size}\n`);
   printSummaryBlock('Overall:', overall);
 
-  // 1. By month
+
   console.log('\n--- By month ---');
   const months = [...new Set(allRows.map((r) => r.forecast_date.slice(0, 7)))].sort();
   console.log(pad('Month', 10), padNum('n', 7), padNum('MAPE', 9), padNum('WAPE', 9), padNum('Bias', 9), padNum('>20%', 8), padNum('>50%', 8));
@@ -497,7 +405,7 @@ async function main() {
     console.log(pad(m, 10), padNum(s.n, 7), padNum(pct(s.mape), 9), padNum(pct(s.wape), 9), padNum((s.bias >= 0 ? '+' : '') + pct(s.bias), 9), padNum(pct(s.over20), 8), padNum(pct(s.over50), 8));
   }
 
-  // 2. By store
+
   console.log('\n--- By store ---');
   console.log(pad('Store ID', 10), padNum('Test Points', 12), padNum('MAPE', 9), padNum('WAPE', 9), padNum('Bias', 9), padNum('>20%', 8), padNum('>50%', 8));
   const storeSummaries = [...byStore.keys()].map((storeId) => {
@@ -508,7 +416,7 @@ async function main() {
     console.log(pad(s.storeId, 10), padNum(s.n, 12), padNum(pct(s.mape), 9), padNum(pct(s.wape), 9), padNum((s.bias >= 0 ? '+' : '') + pct(s.bias), 9), padNum(pct(s.over20), 8), padNum(pct(s.over50), 8));
   }
 
-  // 3. By weekday
+
   console.log('\n--- By weekday ---');
   console.log(pad('Weekday', 10), padNum('n', 7), padNum('MAPE', 9), padNum('WAPE', 9), padNum('Bias', 9), padNum('>20%', 8), padNum('>50%', 8));
   for (const wd of WEEKDAY_NAMES) {
@@ -518,7 +426,7 @@ async function main() {
     console.log(pad(wd, 10), padNum(s.n, 7), padNum(pct(s.mape), 9), padNum(pct(s.wape), 9), padNum((s.bias >= 0 ? '+' : '') + pct(s.bias), 9), padNum(pct(s.over20), 8), padNum(pct(s.over50), 8));
   }
 
-  // 4. By sales-volume segment -- only meaningful with multiple stores to segment across.
+
   if (!singleStoreId && storeSummaries.length >= 3) {
     console.log('\n--- By sales-volume segment (terciles, by each store\'s average actual sales in this window) ---');
     const withAvgActual = [...byStore.keys()].map((storeId) => {
@@ -542,7 +450,7 @@ async function main() {
     console.log('\n--- By sales-volume segment ---\n  (skipped -- too few stores in this result set to segment meaningfully)');
   }
 
-  // Best / worst performing stores (minimum sample size so a 2-point store doesn't dominate).
+
   const MIN_SAMPLES_FOR_RANKING = 10;
   const rankable = storeSummaries.filter((s) => s.n >= MIN_SAMPLES_FOR_RANKING);
   if (rankable.length) {
@@ -556,7 +464,7 @@ async function main() {
     }
   }
 
-  // Largest individual forecast errors, across every point (not store-averaged).
+
   console.log('\n--- Largest individual forecast errors (by APE) ---');
   for (const r of [...allRows].sort((a, b) => b.ape - a.ape).slice(0, 10)) {
     console.log(`  ${r.forecast_date} (${r.weekday}) store ${r.store_id} | actual=${money(r.actual)} forecast=${money(r.forecast)} | APE=${pct(r.ape)} | source=${r.forecast_source} n=${r.history_sample_count}`);
@@ -568,16 +476,12 @@ async function main() {
     console.log(`\nCSV written: ${csvPath} (${allRows.length} rows)`);
   }
 
-  // ================================================================================================
-  // MANPOWER DECISION ACCURACY -- does the forecast, once turned into required headcount, correctly
-  // tell you to increase/keep/decrease staff hour by hour? See src/services/manpowerDecisionAccuracy.js
-  // for the full methodology (ground-truth proxy, decision definition, and scope limitations).
-  // ================================================================================================
+
   console.log('\nLoading real labor guidelines and hourly sales shapes (read-only)...');
-  const chainHourlyRows = await withRetry(() => forecastRepo.findAllHourlySalesHistory()); // loaded once, shared by every store falling back to the chain-wide shape
+  const chainHourlyRows = await withRetry(() => forecastRepo.findAllHourlySalesHistory()); 
 
   const manpowerRecords = [];
-  const storeStatuses = []; // one entry per ACTIVE store (every store in byStore), regardless of whether it produced any classified hours -- this is what coverage reporting counts
+  const storeStatuses = []; 
   for (const [storeId, sortedHistory] of byStore) {
     const [guideline, hourShape] = await Promise.all([resolveEffectiveGuideline(storeId), resolveHourShape(storeId, chainHourlyRows)]);
     storeStatuses.push({ storeId, evaluationStatus: resolveEvaluationStatus(guideline) });
@@ -590,17 +494,14 @@ async function main() {
   } else {
     printClassificationSummary(manpowerRecords, coverage);
 
-    // Breakdowns are restricted to the PRIMARY KPI population (configured-productivity stores) --
-    // an UNCONFIGURED_PRODUCTIVITY store's constant headcount series would otherwise show up as a
-    // spurious 100%-accuracy row in every "by X" table below, which is exactly the "unconfigured
-    // stores printed as if their trivial agreement were model success" this evaluation must avoid.
+
     const primaryRecords = manpowerRecords.filter((r) => r.evaluation_status === EVALUATION_STATUS.CONFIGURED);
 
     if (!primaryRecords.length) {
       console.log('\n(No configured-productivity stores had evaluable hours -- breakdowns skipped.)');
     } else {
 
-    // Breakdowns -------------------------------------------------------------------------------
+
     function summarizeManpower(records) {
       const matrix = computeConfusionMatrix(records);
       return { n: records.length, accuracy: computeAccuracy(matrix), macro: computeMacroMetrics(computeClassMetrics(matrix)), business: computeBusinessMetrics(records) };
@@ -654,7 +555,7 @@ async function main() {
       }
     }
 
-    // Best / worst stores -----------------------------------------------------------------------
+
     const MIN_MANPOWER_SAMPLES = 20;
     const rankableManpower = manpowerStoreSummaries.filter((s) => s.n >= MIN_MANPOWER_SAMPLES);
     if (rankableManpower.length) {
@@ -675,7 +576,7 @@ async function main() {
         console.log(`  ${s.storeId} — ${storeNames.get(s.storeId) || '(unknown)'} | Overstaffing Rate=${pct(s.business.overstaffingRate)} | n=${s.n}`);
       }
     }
-    } // end primaryRecords.length guard
+    } 
 
     if (args.csv) {
       const baseCsvPath = path.resolve(process.cwd(), args.csv);

@@ -1,12 +1,4 @@
-#!/usr/bin/env node
-/**
- * READ-ONLY diagnostic: for every "active" store (a store with at least one real, non-null
- * sales_report.gross_actual row — the same population forecast-accuracy.js's manpower section
- * calls "active stores"), classifies WHY resolveTargetProductivity() does or does not resolve a
- * usable target_productivity. Only ever calls .select() — no writes anywhere in this file.
- *
- *   node scripts/diagnose-productivity-coverage.js
- */
+
 require('dotenv').config();
 const supabase = require('../src/config/supabase');
 const rosterRepo = require('../src/repositories/rosterRepository');
@@ -28,7 +20,7 @@ async function loadActiveStoreIds() {
   return [...ids];
 }
 
-/** Every whr_target_monthly row for a store, regardless of whether productivity is null -- distinguishes "no WHR file ever imported for this store" from "WHR file imported but productivity column left blank". */
+
 async function findAllWhrRows(storeId) {
   const { data, error } = await supabase.from('whr_target_monthly').select('report_month, productivity, whrs, sales').eq('store_id', storeId).order('report_month', { ascending: false });
   if (error) throw error;

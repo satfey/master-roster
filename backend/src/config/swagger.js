@@ -1,8 +1,6 @@
 const swaggerJSDoc = require('swagger-jsdoc');
 
-// Reusable entity + envelope schemas, referenced from the @swagger JSDoc
-// blocks in src/routes/*.js via $ref so every endpoint shares one
-// definition per resource instead of redeclaring its shape.
+
 const schemas = {
   ApiResponse: {
     type: 'object',

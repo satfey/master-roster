@@ -4,13 +4,9 @@ const repo = require('../../repositories/salesReportRepository');
 const importJobStore = require('../importJobStore');
 
 const LOG_PREFIX = '[SALES_REPORT_PREVIEW]';
-// A full month's report across every store in this system is ~17,600 rows —
-// far more than any reviewer will actually read before clicking "confirm".
-// This caps what the PREVIEW response sends back; commit still evaluates
-// (and inserts) every row, this limit only affects the preview payload.
+
 const PREVIEW_ROW_LIMIT = 200;
 
-/** First non-blank Excel store name seen for each Store Id, in file order — used as the name for any auto-created store. */
 function pickStoreNamesByCode(rows) {
   const names = new Map();
   for (const row of rows) {
@@ -20,17 +16,7 @@ function pickStoreNamesByCode(rows) {
   return names;
 }
 
-/**
- * Resolves every distinct Store Id referenced in the file to a store row,
- * creating missing stores when `createMissingStores` is true (commit), or
- * standing in a per-call placeholder when false (preview — nothing is
- * written to the DB, but the row shape/dedup logic stays consistent).
- * A Store Id repeated across many rows resolves/creates exactly once.
- *
- * The Excel Store ID *is* store.id now (no separate UUID identity) — a
- * "placeholder" here is not random, it's the same id the row will actually
- * get on commit, since that id is deterministic from the source file.
- */
+
 async function resolveStores(rows, createMissingStores) {
   const codes = [...new Set(rows.filter((r) => r.storeId !== null).map((r) => r.storeId))];
   const namesByCode = pickStoreNamesByCode(rows);
@@ -62,7 +48,7 @@ function buildRow(row, status, errors, store) {
     status,
     errors,
     reportStoreId: row.reportStoreId,
-    storeId: row.storeId, // business-facing Store ID (e.g. "1001") — this IS store.id, the canonical primary key, not a UUID
+    storeId: row.storeId, 
     willCreateStore: Boolean(store?.pending),
     storeBuId: row.storeBuId,
     storeName: row.storeName,
@@ -96,17 +82,7 @@ function buildRow(row, status, errors, store) {
   };
 }
 
-/**
- * Parses + validates the workbook against the DB. Writes nothing except any
- * auto-created stores when createMissingStores is true. Every row is
- * evaluated (commit needs the full set) — only the PREVIEW response
- * truncates what it sends back, see previewSalesReportImport.
- *
- * `jobId`, when given (commit only — see commitSalesReportImport), is purely
- * a progress-reporting side channel into importJobStore: it does not change
- * anything computed here, it only marks which of these same stages is
- * currently running so a client can poll real status instead of guessing.
- */
+
 async function evaluateRows(buffer, createMissingStores, jobId = null) {
   const t0 = Date.now();
   if (jobId) importJobStore.beginStage(jobId, 'parsing', 'Reading Excel file...');
@@ -130,13 +106,6 @@ async function evaluateRows(buffer, createMissingStores, jobId = null) {
   const tDb = Date.now();
   console.log(`${LOG_PREFIX} database (store lookup + duplicate check): ${tDb - tTransformed} ms (${storeIds.length} distinct stores, ${existingKeys.size} existing keys loaded)`);
 
-  // A (store, date) key can legitimately appear more than once in one file
-  // (a re-exported/appended report) — that's not an error, but only one
-  // write per key can happen. The LAST occurrence in file order wins, since
-  // the newly uploaded file is the source of truth and a later row is the
-  // more "recent" statement of that day's numbers within the file itself.
-  // This pass just records which rowNumber wins for each key; earlier
-  // occurrences are marked 'duplicate_in_file' below and never written.
   const winningRowNumberByKey = new Map();
   for (const row of rows) {
     if (row.errors.length || row.storeId === null) continue;
@@ -167,7 +136,7 @@ async function evaluateRows(buffer, createMissingStores, jobId = null) {
   return { rows: resultRows, createdStores };
 }
 
-/** Invalid rows and in-file duplicates first (a preview's whole purpose is surfacing problems — these must never be truncated away), then as many of the rest as fit within PREVIEW_ROW_LIMIT, back in file order. */
+
 function buildPreviewRows(rows) {
   const priority = rows.filter((r) => r.status === 'invalid' || r.status === 'duplicate_in_file');
   const rest = rows.filter((r) => r.status !== 'invalid' && r.status !== 'duplicate_in_file');
@@ -185,13 +154,13 @@ function summarize({ rows, createdStores }) {
 
   return {
     totalRows: rows.length,
-    newRows, // will be INSERTed
-    updateRows, // (store_id, report_date) already exists — will be UPDATEd with this file's data
-    validRows: newRows + updateRows, // total rows that will actually be written, insert + update combined
+    newRows,
+    updateRows, 
+    validRows: newRows + updateRows,
     invalidRows: rows.filter((r) => r.status === 'invalid').length,
-    duplicateInFileRows: rows.filter((r) => r.status === 'duplicate_in_file').length, // same key repeated within this file — only the last occurrence is written
+    duplicateInFileRows: rows.filter((r) => r.status === 'duplicate_in_file').length,
     newStoreCount: new Set(rows.filter((r) => r.willCreateStore).map((r) => r.reportStoreId)).size,
-    previewRowCount: previewRows.length, // how many of totalRows are actually included below, since previewRows is capped
+    previewRowCount: previewRows.length,
     previewRows,
   };
 }
@@ -203,14 +172,10 @@ async function previewSalesReportImport(buffer) {
   return result;
 }
 
-/** `jobId`, when given, is the same progress side-channel described on evaluateRows — purely additive, never changes what gets written or how. */
+
 async function commitSalesReportImport(buffer, userId, jobId = null) {
   const { rows, createdStores } = await evaluateRows(buffer, true, jobId);
-  // 'new' (no existing DB row for this store+date) and 'update' (one already
-  // exists) are both written — the upsert below decides INSERT vs UPDATE per
-  // row via ON CONFLICT. 'duplicate_in_file' rows are never written: a
-  // duplicate key within this same file was already resolved down to a
-  // single winning row during evaluateRows.
+
   const writableRows = rows.filter((r) => r.status === 'new' || r.status === 'update');
 
   const sourceType = await repo.getSalesReportSourceType();
@@ -249,13 +214,8 @@ async function commitSalesReportImport(buffer, userId, jobId = null) {
 
     source_type_id: sourceType.id,
     entered_by: userId,
-    // no updated_at here — sales_report has no such column (only created_at, which upsertRecords
-    // deliberately omits from every record so it's never touched on an update).
   }));
 
-  // upsertRecords chunks the write and reports real, row-counted progress as each chunk
-  // lands (see its own doc comment for the tradeoff: no longer one all-or-nothing atomic
-  // statement for the whole file, in exchange for genuine progress on a very large import).
   if (jobId) importJobStore.beginStage(jobId, 'database_insert', `Writing ${records.length} rows to database...`);
   const imported = await repo.upsertRecords(records, {
     onBatchComplete: jobId ? ({ rowsWrittenSoFar, totalRows }) => importJobStore.setStageProgress(jobId, { processed: rowsWrittenSoFar, total: totalRows }) : undefined,
@@ -263,7 +223,7 @@ async function commitSalesReportImport(buffer, userId, jobId = null) {
 
   return {
     total: rows.length,
-    imported, // total rows written this commit, insert + update combined
+    imported, 
     inserted: writableRows.filter((r) => r.status === 'new').length,
     updated: writableRows.filter((r) => r.status === 'update').length,
     skippedDuplicatesInFile: rows.filter((r) => r.status === 'duplicate_in_file').length,

@@ -1,39 +1,4 @@
--- Seeds labor_hour_guideline_tier with the company's actual Sales/Day ->
--- Labor Hours guideline, from the "Master-Revise" sheet of the business
--- reference Excel file (NOT the earlier "COLGlobal" sheet, and NOT the
--- earlier 3-example placeholder values shown before this file existed —
--- those were never inserted; this table has been confirmed empty).
---
--- WHAT THIS ADDS
--- 1. labor_hour_guideline_tier gets three new nullable columns:
---      level                  SMALLINT      -- Master-Revise's "Level" column (1-12 below)
---      standard_working_hours NUMERIC(4,2)  -- Master-Revise's "Standard Working Day" column
---      min_staff_count        SMALLINT      -- Master-Revise's "Staff requirement" column
---    Only `level` is populated by this migration (given below); the other
---    two are added now so a later seed can fill them in without a third
---    migration, but are left NULL here since those specific figures were
---    not provided yet — nothing is invented or estimated for them.
--- 2. 12 global tier rows (store_id NULL — applies to every store without
---    its own override), exactly the Sales/Day ranges and labor-hour values
---    given, in THB/day:
---      0–6,000      Level 1  -> 12h   6,001–8,000    Level 2  -> 12h
---      8,001–10,000 Level 3  -> 12h   10,001–12,000  Level 4  -> 12h
---      12,001–13,000 Level 5 -> 12h   13,001–15,000  Level 6  -> 12h
---      15,001–16,000 Level 7 -> 12h   16,001–17,000  Level 8  -> 12h
---      17,001–19,000 Level 9 -> 12h   19,001–21,000  Level 10 -> 12h
---      21,001–23,000 Level 11 -> 12h  23,001–25,000  Level 12 -> 12h
---    A store's daily sales/budget above 25,000 (outside every range here)
---    still falls back to target_productivity-derived sizing automatically
---    — matchTier() in laborBudgetService.js already handles "no tier
---    matched" this way, so no application code change was needed for that.
---
--- WHAT THIS DOES NOT TOUCH
--- Any other table; no existing rows anywhere are modified (the tier table
--- was empty). Rolling monthly capacity / actual-hours logic is unchanged.
---
--- Safe to run more than once: the column-add step is guarded, and the
--- row-insert step is guarded to skip if any global tier already exists
--- (so a second run doesn't duplicate the 12 rows).
+
 
 BEGIN;
 
@@ -80,5 +45,4 @@ END $$;
 
 COMMIT;
 
--- After running: reload the PostgREST schema cache (Settings -> API ->
--- "Reload schema", or `NOTIFY pgrst, 'reload schema';`).
+
