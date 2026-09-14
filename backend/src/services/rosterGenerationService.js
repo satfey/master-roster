@@ -221,7 +221,7 @@ function chooseFullTimeStartHour({ targetHour, ceilingByHour, coverageByHour }) 
     }
   }
 
-  return best.start;
+  return { start: best.start, score: best.score };
 }
 
 /**
@@ -703,13 +703,26 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
         })
         .sort((a, b) => {
           if (type === 'FULL_TIME') {
-            // Full-time is paid a fixed salary regardless of hours worked (within the weekly/
-            // monthly caps already enforced above) — spreading hours "fairly" across multiple
-            // Full-time employees costs the same but leaves each one under-utilized relative to
-            // what they're already being paid for, and can force the schedule to reach for
-            // (hourly-paid) Part-time hours it didn't actually need to. Concentrate hours on
-            // whichever Full-time employee is already furthest into their week first, so one
-            // reaches their full weekly cap before a second Full-time employee's week even starts.
+            // Managers and Team Leads are staffed before other Full-time employees.
+            //
+            // This used to sort on accumulated weekly hours ALONE. At the start of a week every
+            // Full-time employee sits at 0, so that comparator was a no-op and the winner was
+            // decided by whatever order the rows happened to come back from the database — and
+            // "concentrate hours" then loaded that arbitrary first employee to their full 48h
+            // before the next one was considered at all. Whoever lost the coin toss worked one or
+            // two days a week, weekend included.
+            //
+            // Measured across ten real stores: store 1453 returns its Full-timers as
+            // [Service Staff, Service Staff, Store Manager, Store Manager] and both its Store
+            // Managers came out on 8h and 16h for the week, off on a 20,615 Saturday and a 25,635
+            // Sunday. Store 1215 returns [Store Manager, Store Manager, Service Staff, ...] and
+            // had no such problem. Same code, opposite outcome, decided by row order.
+            //
+            // Management presence on high-demand days is a business requirement, so role is the
+            // primary key and the concentrate-hours rule applies WITHIN each role group — its
+            // intent (don't spread Full-time thinly and then buy Part-time hours) is unchanged.
+            const managerRank = (isManagerRole(b) ? 1 : 0) - (isManagerRole(a) ? 1 : 0);
+            if (managerRank !== 0) return managerRank;
             return (weeklyUsed[`${b.id}-${weekStart}`] || 0) - (weeklyUsed[`${a.id}-${weekStart}`] || 0);
           }
           // Part-time is paid hourly — fair distribution (least-used first) is the right default.
@@ -879,7 +892,7 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
         });
         let placed = place('PART_TIME', window.start, window.length, { respectStoreCap: false });
         if (!placed) {
-          const ftStart = chooseFullTimeStartHour({ targetHour: hour, ceilingByHour: minRequiredByHour, coverageByHour });
+          const { start: ftStart } = chooseFullTimeStartHour({ targetHour: hour, ceilingByHour: minRequiredByHour, coverageByHour });
           placed = place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: false });
         }
         if (!placed) {
@@ -956,11 +969,39 @@ async function generateDraftRoster({ storeId, startDate, endDate, regenerate = f
       // Capping the day's total at the sum of its own hourly ceilings keeps peak-hour fill intact
       // (a busy day simply has a bigger ceiling to spend) while stopping quiet days from eating
       // capacity that belongs to the week's busy ones.
-      let placed = place('PART_TIME', window.start, window.length, { respectStoreCap: true });
+      // Full-time FIRST, Part-time as the fill-in — not the other way round.
+      //
+      // This used to try Part-time first and only reach for Full-time once NO Part-time employee
+      // was eligible. At a store with a deep Part-time bench that condition never arrives, so a
+      // Full-time employee who still had hours left simply never got them. Real data, store 1508
+      // (6 Full-timers, 18 Part-timers): three Full-timers were left on 0h, 8h and 8h for the
+      // week, and the two with 8h worked THURSDAY — the quietest day — while sitting out a 41,213
+      // Saturday and a 35,335 Sunday. They only appeared on Thursday at all because the other
+      // three were on their rest day, leaving a coverage hole for them to plug. Exactly backwards,
+      // and precisely the "do not use Part-time to replace a Full-time employee who can still be
+      // scheduled" rule being inverted.
+      //
+      // The gate is the reason it was written that way in the first place: Full-time is an
+      // indivisible 8-hour block, so handing it a 4-hour gap would overstaff the surrounding
+      // hours. So Full-time is used only when its best available placement genuinely absorbs a
+      // full shift's worth of unmet demand; anything smaller is still Part-time's job, which is
+      // what keeps a quiet day from being padded out.
+      let placed = null;
+      if (remainingDailyBudget >= FULL_TIME_SHIFT_HOURS) {
+        const ft = chooseFullTimeStartHour({ targetHour, ceilingByHour: maxJustifiedByHour, coverageByHour });
+        if (ft.score >= FULL_TIME_SHIFT_HOURS) {
+          // respectPreferredDayOff: this phase is DISCRETIONARY. Opening/closing coverage and
+          // minimum staffing may override a rest day because the store cannot legally trade
+          // without them; topping a busy hour up cannot. Without this, the extra Full-time hours
+          // came partly out of employees who were meant to be resting, which spent their weekly
+          // cap early and pushed their real rest day onto the weekend — measured: weekend rest
+          // days went from 0 to 2 the moment Full-time-first fill was switched on.
+          placed = place('FULL_TIME', ft.start, FULL_TIME_SHIFT_HOURS, { respectStoreCap: true, respectPreferredDayOff: true });
+        }
+      }
 
-      if (!placed && remainingDailyBudget >= FULL_TIME_SHIFT_HOURS) {
-        const ftStart = chooseFullTimeStartHour({ targetHour, ceilingByHour: maxJustifiedByHour, coverageByHour });
-        placed = place('FULL_TIME', ftStart, FULL_TIME_SHIFT_HOURS, { respectStoreCap: true });
+      if (!placed) {
+        placed = place('PART_TIME', window.start, window.length, { respectStoreCap: true });
       }
 
       if (!placed) break; // no eligible employee of either type left

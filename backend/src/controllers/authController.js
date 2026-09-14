@@ -3,6 +3,7 @@ const { success, failure } = require('../utils/apiResponse');
 const { comparePassword } = require('../utils/password');
 const { signToken } = require('../utils/jwt');
 const { buildUserIdentity, findActiveUserById } = require('../middleware/authenticate');
+const { recordFailedLogin, clearLoginAttempts } = require('../middleware/loginRateLimit');
 
 /**
  * Looks up the user by email (not id, since a login request only has the
@@ -28,8 +29,12 @@ async function login(req, res) {
   // part failed. bcrypt.compare is never called with a null hash.
   const passwordOk = userRow?.password_hash ? await comparePassword(password, userRow.password_hash) : false;
   if (!userRow || !passwordOk) {
+    recordFailedLogin(req);
     return failure(res, 'Invalid email or password', 401);
   }
+
+  // Only failures are throttled, so a user who mistypes and then succeeds starts clean.
+  clearLoginAttempts(req);
 
   const identity = await buildUserIdentity(userRow);
   const token = signToken({ userId: userRow.id });

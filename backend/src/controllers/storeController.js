@@ -3,6 +3,7 @@ const { success, failure } = require('../utils/apiResponse');
 const { getAllowedStoreIds } = require('../middleware/storeScope');
 const { withDisplayStoreId } = require('../utils/storeDisplay');
 const { normalizeStoreId } = require('../services/salesImport/transform');
+const { EMPLOYEE_PUBLIC_EMBED } = require('../utils/employeeFields');
 
 async function list(req, res) {
   const allowedStoreIds = getAllowedStoreIds(req.user);
@@ -17,7 +18,7 @@ async function getOne(req, res) {
   const { id } = req.params;
   const { data: store, error } = await supabase
     .from('store')
-    .select('*, employee(*), labor_guideline(*), area_coach:area_coach!fk_store_area_coach(*)')
+    .select(`*, ${EMPLOYEE_PUBLIC_EMBED}, labor_guideline(*), area_coach:area_coach!fk_store_area_coach(*)`)
     .eq('employee.is_active', true)
     .eq('id', id)
     .maybeSingle();

@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const authController = require('../controllers/authController');
 const authenticate = require('../middleware/authenticate');
+const { loginRateLimit } = require('../middleware/loginRateLimit');
 
 /**
  * @swagger
@@ -80,7 +81,9 @@ const authenticate = require('../middleware/authenticate');
  *       500:
  *         $ref: '#/components/responses/ServerError'
  */
-router.post('/login', authController.login);
+// Throttles repeated FAILED logins per (IP + email) — this is the only authentication
+// endpoint in the API, and it previously had no limit of any kind.
+router.post('/login', loginRateLimit, authController.login);
 
 /**
  * @swagger

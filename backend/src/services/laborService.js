@@ -1,5 +1,6 @@
 const supabase = require('../config/supabase');
 const { computeAllowedHours } = require('./laborGuidelineHelpers');
+const { EMPLOYEE_PUBLIC_EMBED } = require('../utils/employeeFields');
 
 /**
  * Records actual worked hours for a single shift (clock-in/out or a manual
@@ -31,7 +32,7 @@ async function recordActualHours({ shiftId, actualHours, clockIn, clockOut, reco
 async function getStoreLaborSummary({ storeId, from, to }) {
   let shiftQuery = supabase
     .from('shift')
-    .select('*, actual_hours(*), employee(*), roster!inner(store_id)')
+    .select(`*, actual_hours(*), ${EMPLOYEE_PUBLIC_EMBED}, roster!inner(store_id)`)
     .eq('roster.store_id', storeId)
     .order('shift_date', { ascending: true });
   if (from) shiftQuery = shiftQuery.gte('shift_date', from);

@@ -2,12 +2,14 @@ const supabase = require('../config/supabase');
 const { success, failure } = require('../utils/apiResponse');
 const { logActivity } = require('../utils/activityLogger');
 const { normalizeStoreId } = require('../services/salesImport/transform');
+const { EMPLOYEE_PUBLIC_COLUMNS } = require('../utils/employeeFields');
 
 async function list(req, res) {
   const { storeId } = req.query;
   const { data: employees, error } = await supabase
     .from('employee')
-    .select('*')
+    // Never `*`: that includes each person's pay_rate_type and sl_comp_*/hr_comp_* amounts.
+    .select(EMPLOYEE_PUBLIC_COLUMNS)
     .eq('store_id', storeId)
     .eq('is_active', true)
     .order('last_name', { ascending: true });
@@ -36,7 +38,7 @@ async function create(req, res) {
       position: position || null,
       is_active: isActive ?? true,
     })
-    .select()
+    .select(EMPLOYEE_PUBLIC_COLUMNS)
     .single();
   if (error) throw error;
   await logActivity({ userId: req.user.id, action: 'CREATE_EMPLOYEE', storeId: employee.store_id, details: employee });
@@ -57,10 +59,12 @@ async function update(req, res) {
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
-    .select()
+    .select(EMPLOYEE_PUBLIC_COLUMNS)
     .single();
   if (error) throw error;
-  await logActivity({ userId: req.user.id, action: 'UPDATE_EMPLOYEE', storeId: employee.store_id, details: req.body });
+  // Field names only. The body carries a person's name and posting; the log needs to say what
+  // was touched, not to keep a second copy of the record.
+  await logActivity({ userId: req.user.id, action: 'UPDATE_EMPLOYEE', storeId: employee.store_id, details: { employeeId: id, changedFields: Object.keys(req.body) } });
   return success(res, employee, 'Employee updated');
 }
 
@@ -70,7 +74,7 @@ async function remove(req, res) {
     .from('employee')
     .update({ is_active: false, updated_at: new Date().toISOString() })
     .eq('id', id)
-    .select()
+    .select(EMPLOYEE_PUBLIC_COLUMNS)
     .single();
   if (error) throw error;
   await logActivity({ userId: req.user.id, action: 'DEACTIVATE_EMPLOYEE', storeId: employee.store_id });

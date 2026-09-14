@@ -108,7 +108,148 @@ async function evaluate(storeId, startDate, endDate) {
     };
   });
 
-  return { storeId, days, ftCount: ftIds.length, mgrCount: mgrIds.size, ftIds, mgrIds, shifts, warnings: result.warnings, validation: result.validation };
+  const ptIds = new Set(employees.filter((e) => employeeShiftType(e) === 'PART_TIME').map((e) => e.id));
+  return { storeId, days, ftCount: ftIds.length, mgrCount: mgrIds.size, ftIds, mgrIds, ptIds, shifts, warnings: result.warnings, validation: result.validation };
+}
+
+/**
+ * Manager / Team Lead specific view.
+ *
+ * Kept separate from the aggregate Q-numbers because management coverage on a busy day is its own
+ * business requirement, and because the aggregate hid a real defect once already: it only counted
+ * employees who worked exactly 6 of 7 days, so a manager who was barely scheduled at all — the
+ * actual failure mode — was invisible to it.
+ *
+ * The two are distinguished deliberately:
+ *   - a DESIGNATED rest day (manager at full quota, exactly one day off) is a scheduling CHOICE,
+ *     and a high-demand weekend one is a defect;
+ *   - more than one non-working day is SURPLUS CAPACITY — the store has more Full-time managers
+ *     than its demand supports — which is a utilisation question, not a rest-day choice.
+ */
+function reportManagers(runs) {
+  let designatedWeekendViolations = 0;
+  let atQuota = 0;
+  let total = 0;
+  let onBusiest = 0;
+  let onQuietest = 0;
+  let storesWithoutManagerOnBusiest = 0;
+  const examples = [];
+
+  for (const r of runs) {
+    if (r.mgrIds.size === 0) continue;
+    const sorted = [...r.days].sort((a, b) => a.sales - b.sales);
+    const busiest = sorted[sorted.length - 1];
+    const quietest = sorted[0];
+    const workedOn = (id, date) => r.shifts.some((s) => s.employee_id === id && s.shift_date === date);
+    const mgrsOnBusiest = [...r.mgrIds].filter((id) => workedOn(id, busiest.date)).length;
+
+    total += r.mgrIds.size;
+    onBusiest += mgrsOnBusiest;
+    onQuietest += [...r.mgrIds].filter((id) => workedOn(id, quietest.date)).length;
+    if (mgrsOnBusiest === 0) storesWithoutManagerOnBusiest++;
+
+    for (const id of r.mgrIds) {
+      const worked = new Set(r.shifts.filter((s) => s.employee_id === id).map((s) => s.shift_date));
+      const hours = r.shifts.filter((s) => s.employee_id === id).reduce((sum, x) => sum + Number(x.planned_hours), 0);
+      if (worked.size === 6 && hours === 48) atQuota++;
+      const off = r.days.map((d) => d.date).filter((d) => !worked.has(d));
+      if (off.length !== 1) continue; // surplus capacity, not a rest-day choice
+      const restDate = off[0];
+      const quieterWeekday = r.days.filter((d) => !isWeekend(d.date) && d.sales < r.days.find((x) => x.date === restDate).sales);
+      if (isWeekend(restDate) && quieterWeekday.length > 0) {
+        designatedWeekendViolations++;
+        examples.push(`store ${r.storeId} ${id} off ${restDate} ${dowOf(restDate)} (${quieterWeekday.length} quieter weekdays existed)`);
+      }
+    }
+  }
+
+  // ---- M7/M8/M9 48h compliance, split by role -----------------------------
+  // Split because the two answer different questions: M7 is "is management actually being
+  // staffed", M8 is "did prioritising management cost anyone else their hours".
+  let mgrAtQuota = 0;
+  let mgrTotal = 0;
+  let staffAtQuota = 0;
+  let staffTotal = 0;
+  // ---- surplus classification --------------------------------------------
+  // An under-quota Full-timer is SURPLUS, not a scheduling failure, when the store's scheduled
+  // person-hours already meet what its own forecast justifies: adding them could only overstaff.
+  // This is why M4/M7 are not expected to reach 100% and must never be forced there.
+  const surplusStores = [];
+  // ---- M11 management cover during the busiest hours ----------------------
+  let peakHourSlots = 0;
+  let peakHourWithManager = 0;
+
+  for (const r of runs) {
+    if (r.mgrIds.size === 0) continue;
+    const hoursOf = (id) => r.shifts.filter((s) => s.employee_id === id).reduce((sum, x) => sum + Number(x.planned_hours), 0);
+    const daysOf = (id) => new Set(r.shifts.filter((s) => s.employee_id === id).map((s) => s.shift_date)).size;
+
+    for (const id of r.ftIds) {
+      const ok = daysOf(id) === 6 && hoursOf(id) === 48;
+      if (r.mgrIds.has(id)) {
+        mgrTotal++;
+        if (ok) mgrAtQuota++;
+      } else {
+        staffTotal++;
+        if (ok) staffAtQuota++;
+      }
+    }
+
+    const justified = r.days.reduce((sum, d) => sum + d.hourRows.reduce((a, h) => a + h.ceiling, 0), 0);
+    const scheduled = r.shifts.reduce((sum, x) => sum + Number(x.planned_hours), 0);
+    const under = r.ftIds.filter((id) => !(daysOf(id) === 6 && hoursOf(id) === 48));
+    if (under.length) {
+      surplusStores.push({
+        storeId: r.storeId,
+        under: under.length,
+        ft: r.ftIds.length,
+        justified,
+        scheduled,
+        surplus: scheduled >= justified,
+      });
+    }
+
+    // Top-quartile sales hours for THIS store, and whether a manager was on the floor.
+    const allHrs = r.days.flatMap((d) => d.hourRows.map((h) => ({ ...h, date: d.date })));
+    const cut = [...allHrs].sort((a, b) => b.sales - a.sales).slice(0, Math.ceil(allHrs.length / 4));
+    for (const h of cut) {
+      peakHourSlots++;
+      const covered = [...r.mgrIds].some((id) =>
+        r.shifts.some((s) => {
+          if (s.employee_id !== id || s.shift_date !== h.date) return false;
+          const st = Number(s.start_time.slice(0, 2));
+          const en = Number(s.end_time.slice(0, 2));
+          if (!(st <= h.hour && h.hour < en)) return false;
+          return !(s.break_start_time && Number(s.break_start_time.slice(0, 2)) === h.hour);
+        })
+      );
+      if (covered) peakHourWithManager++;
+    }
+  }
+
+  const rate = (n, d) => (d ? `${n}/${d} (${Math.round((n / d) * 100)}%)` : 'n/a');
+
+  console.log('   ---- Manager / Team Lead ----');
+  console.log(`   M1/M2 high-demand weekend rest (designated) : ${designatedWeekendViolations}`);
+  console.log(`   M3 weekend rest rate                       : ${total ? Math.round((designatedWeekendViolations / total) * 100) : 0}%`);
+  console.log(`   M4 managers on busiest day                 : ${onBusiest}/${total}   (quietest day: ${onQuietest}/${total})`);
+  console.log(`      stores with NO manager on busiest day   : ${storesWithoutManagerOnBusiest}`);
+  console.log(`   M5 managers at 6 days / 48h                : ${atQuota}/${total}`);
+  console.log(`   M6 CRITICAL weekend rest w/ valid weekday  : ${designatedWeekendViolations}`);
+  console.log(`   M7 MANAGER FT 48h compliance               : ${rate(mgrAtQuota, mgrTotal)}`);
+  console.log(`   M8 NON-MANAGER FT 48h compliance           : ${rate(staffAtQuota, staffTotal)}`);
+  console.log(`   M9 OVERALL FT 48h compliance               : ${rate(mgrAtQuota + staffAtQuota, mgrTotal + staffTotal)}`);
+  console.log(`   M10 manager presence, high-demand days     : ${rate(onBusiest, total)}`);
+  console.log(`   M11 manager presence, high-demand HOURS    : ${rate(peakHourWithManager, peakHourSlots)}`);
+  if (surplusStores.length) {
+    console.log('   ---- under-quota Full-time, classified ----');
+    for (const s of surplusStores) {
+      console.log(
+        `      store ${String(s.storeId).padEnd(8)} ${s.under}/${s.ft} FT under quota  scheduled ${s.scheduled}h vs justified ${s.justified}h  -> ${s.surplus ? 'SURPLUS CAPACITY (demand does not justify more FT)' : 'UNDER-STAFFED (investigate)'}`
+      );
+    }
+  }
+  examples.slice(0, 5).forEach((e) => console.log(`      ! ${e}`));
 }
 
 function score(runs) {
@@ -177,7 +318,11 @@ function score(runs) {
   console.log(`Q4 top-quartile hour shortfall        : ${shortfall(topQ)} person-hours below the justified ceiling`);
   console.log(`Q5 Manager present, high vs low days  : ${(mgrHigh / runs.length).toFixed(2)} vs ${(mgrLow / runs.length).toFixed(2)}  ${mgrHigh >= mgrLow ? 'OK' : 'FAIL'}`);
   console.log(`   Manager rest days on a weekend     : ${rests.filter((r) => r.manager && r.weekend).length}/${rests.filter((r) => r.manager).length}`);
+  reportManagers(runs);
+  const ftHours = runs.reduce((sum, r) => sum + r.shifts.filter((x) => !r.ptIds.has(x.employee_id)).reduce((a, x) => a + Number(x.planned_hours), 0), 0);
+  const ptHours = runs.reduce((sum, r) => sum + r.shifts.filter((x) => r.ptIds.has(x.employee_id)).reduce((a, x) => a + Number(x.planned_hours), 0), 0);
   console.log(`Q6 PT hours / total hours             : ${pct(allDays.reduce((s, d) => s + d.pt, 0), allDays.reduce((s, d) => s + d.ft + d.pt, 0))} of bodies`);
+  console.log(`   absolute hours                     : FT ${ftHours}h   PT ${ptHours}h   total ${ftHours + ptHours}h`);
   console.log(`Q7 bottom-quartile hour EXCESS        : ${excess(botQ)} person-hours above the justified ceiling`);
   console.log(`   ...at open/close hours (MANDATORY) : ${mandatoryExcess(botQ)}`);
   console.log(`   ...mid-day (genuinely discretionary): ${discretionaryExcess(botQ)}`);

@@ -6,8 +6,11 @@ const laborBudgetRepo = require('../repositories/laborBudgetRepository');
 const supabase = require('../config/supabase');
 const { success, failure } = require('../utils/apiResponse');
 const { logActivity } = require('../utils/activityLogger');
+const { EMPLOYEE_PUBLIC_EMBED } = require('../utils/employeeFields');
 
-const ROSTER_SHIFTS_SELECT = '*, shift(*, employee(*), actual_hours(*))';
+// Explicit employee columns, not a wildcard: the roster screen needs names and positions, and a
+// wildcard would put every person's pay in this response. See utils/employeeFields.js.
+const ROSTER_SHIFTS_SELECT = `*, shift(*, ${EMPLOYEE_PUBLIC_EMBED}, actual_hours(*))`;
 
 async function autoGenerate(req, res) {
   const { storeId, startDate, endDate, regenerate } = req.body;

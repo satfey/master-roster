@@ -1,3 +1,5 @@
+const { redact } = require('./redact');
+
 /**
  * NOTE: the new ERD (master_roster_erd.html) does not include an
  * ActivityLog table, so there is nowhere to persist these events yet.
@@ -7,7 +9,9 @@
  * / the previous docs/DatabaseDesign.md if needed).
  */
 async function logActivity({ userId, action, storeId = null, details = null }) {
-  console.log('[activity]', { userId, action, storeId, details, at: new Date().toISOString() });
+  // `details` is whatever the calling controller passed — in at least one case an entire request
+  // body. Redacting here rather than at each call site means a new caller cannot leak by accident.
+  console.log('[activity]', { userId, action, storeId, details: redact(details), at: new Date().toISOString() });
 }
 
 module.exports = { logActivity };

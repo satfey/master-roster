@@ -144,3 +144,106 @@ describe('getAllowedStoreIds', () => {
     expect(getAllowedStoreIds({ role: 'AREA_COACH', areaStoreIds: ['1001', '1002'] })).toEqual(['1001', '1002']);
   });
 });
+
+/**
+ * Regression: storeScope used to resolve its target as
+ *   req.params.id || req.params.storeId || req.query.storeId || req.body?.storeId
+ * i.e. first-value-wins. Write controllers read storeId from the BODY, so a caller could name a
+ * store they own in the query string and the store they wanted in the body: the middleware checked
+ * one, the controller wrote the other.
+ */
+describe('storeScope — a request may not name two different stores (query-shadowing bypass)', () => {
+  test('SECURITY: query says my store, body says another — refused, not allowed through', () => {
+    const req = {
+      user: { role: 'STORE_MANAGER', storeId: '1001', areaStoreIds: [] },
+      params: {},
+      query: { storeId: '1001' },
+      body: { storeId: '2002', regenerate: true },
+    };
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('SECURITY: a path param that disagrees with the body is refused too', () => {
+    const req = {
+      user: { role: 'STORE_MANAGER', storeId: '1001', areaStoreIds: [] },
+      params: { id: '1001' },
+      query: {},
+      body: { storeId: '2002' },
+    };
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('SECURITY: an ADMIN request is refused as malformed too, rather than resolved silently', () => {
+    const req = {
+      user: { role: 'ADMIN', storeId: null, areaStoreIds: [] },
+      params: {},
+      query: { storeId: '1001' },
+      body: { storeId: '2002' },
+    };
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(next).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(400);
+  });
+
+  test('the same store named in both query and body agrees, and is allowed', () => {
+    const req = {
+      user: { role: 'STORE_MANAGER', storeId: '1001', areaStoreIds: [] },
+      params: {},
+      query: { storeId: '1001' },
+      body: { storeId: '1001' },
+    };
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).not.toHaveBeenCalled();
+  });
+
+  test('a store named only in the body is still validated (the ordinary write case)', () => {
+    const req = {
+      user: { role: 'STORE_MANAGER', storeId: '1001', areaStoreIds: [] },
+      params: {},
+      query: {},
+      body: { storeId: '2002' },
+    };
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(res.status).toHaveBeenCalledWith(403);
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  test('a numeric body storeId and a string query storeId are the same store, not a conflict', () => {
+    const req = {
+      user: { role: 'STORE_MANAGER', storeId: '1001', areaStoreIds: [] },
+      params: {},
+      query: { storeId: '1001' },
+      body: { storeId: 1001 },
+    };
+    const res = makeRes();
+    const next = jest.fn();
+
+    storeScope(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+  });
+});

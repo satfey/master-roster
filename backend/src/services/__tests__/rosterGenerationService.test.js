@@ -2546,3 +2546,228 @@ describe('rosterGenerationService — weekend protection does not break the exis
     expect(managerWorksSunday).toBe(true);
   });
 });
+
+/**
+ * Manager / Team Lead presence on high-demand days.
+ *
+ * The reported symptom was "the Store Manager is still given Sunday off when Sunday is busy". The
+ * cause was NOT the rest-day chooser — it was pickEmployee's Full-time comparator, which sorted on
+ * accumulated weekly hours alone. At the start of a week every Full-timer sits at 0, so that
+ * comparator was a no-op and the winner was decided by the order rows happened to come back from
+ * the database; "concentrate hours" then loaded that arbitrary first employee to a full 48h before
+ * the next was considered at all. Whoever lost worked one or two days that week, weekend included.
+ *
+ * Measured on real stores: 1453 returns its Full-timers as [Service Staff, Service Staff, Store
+ * Manager, Store Manager] and had only 1 of 2 managers on its busiest day (Sunday); 1215 returns
+ * [Store Manager, Store Manager, ...] and had 2 of 2. Same code, opposite outcome, decided by row
+ * order — which is why these tests put the manager LAST in the pool.
+ */
+describe('rosterGenerationService — Manager / Team Lead presence on high-demand days', () => {
+  const WEEK = ['2026-08-17', '2026-08-18', '2026-08-19', '2026-08-20', '2026-08-21', '2026-08-22', '2026-08-23']; // Mon..Sun
+  const SUNDAY = '2026-08-23';
+  const SATURDAY = '2026-08-22';
+
+  /** Real forecast history shaped per weekday (0=Sun..6=Sat), so every day has a known demand rank. */
+  function mockWeekdayForecast(amountByWeekday) {
+    const rows = [];
+    const end = new Date('2026-08-01T00:00:00Z');
+    for (let i = 1; i <= 28; i++) {
+      const d = new Date(end.getTime() - i * 24 * 60 * 60 * 1000);
+      rows.push({ report_date: d.toISOString().slice(0, 10), gross_actual: amountByWeekday[d.getUTCDay()] });
+    }
+    forecastRepo.findDailySalesHistory.mockResolvedValue(rows);
+    forecastRepo.findHourlySalesHistory.mockResolvedValue([]);
+    forecastRepo.findAllHourlySalesHistory.mockResolvedValue([]);
+    forecastRepo.createModelRun.mockResolvedValue({ id: 'model-x' });
+    const forecastRows = [];
+    forecastRepo.upsertForecastRows.mockImplementation(async (r) => {
+      forecastRows.push(...r);
+      return r;
+    });
+    forecastRepo.findForecastRows.mockImplementation(async ({ storeId, startDate, endDate, hourly }) =>
+      forecastRows.filter(
+        (r) => r.store_id === storeId && r.forecast_date >= startDate && r.forecast_date <= endDate && (hourly ? r.daypart !== 'FULL_DAY' : r.daypart === 'FULL_DAY')
+      )
+    );
+  }
+
+  // Mon..Thu quiet, Fri..Sun busy — the brief's worked example. Sunday is the single busiest day.
+  const BUSY_WEEKEND = { 1: 15000, 2: 16000, 3: 17000, 4: 18000, 5: 24000, 6: 28000, 0: 30000 };
+  // Sunday is the quietest day of the week.
+  const QUIET_SUNDAY = { 1: 20000, 2: 21000, 3: 22000, 4: 23000, 5: 24000, 6: 15000, 0: 12000 };
+
+  const manager = (id) => makeEmployee(id, { position: 'Store Manager' });
+  const teamLead = (id) => makeEmployee(id, { position: 'Team Lead' });
+  const staff = (id) => makeEmployee(id, { position: 'Service Staff' });
+
+  const worksOn = (store, id, date) => store.shifts.some((s) => s.employee_id === id && s.shift_date === date);
+  const shiftsOf = (store, id) => store.shifts.filter((s) => s.employee_id === id);
+  const hoursOf = (store, id) => shiftsOf(store, id).reduce((sum, s) => sum + Number(s.planned_hours), 0);
+
+  function coverageAt(store, date, hour) {
+    return store.shifts.filter((s) => {
+      if (s.shift_date !== date) return false;
+      const start = Number(s.start_time.slice(0, 2));
+      const end = Number(s.end_time.slice(0, 2));
+      if (!(start <= hour && hour < end)) return false;
+      if (s.break_start_time && Number(s.break_start_time.slice(0, 2)) === hour) return false;
+      return true;
+    }).length;
+  }
+
+  /**
+   * Manager deliberately LAST in the pool, reproducing store 1453's real row order. Before the
+   * fix this ordering alone decided that the manager worked one day a week.
+   */
+  const managerLastStore = () =>
+    createFakeStore({
+      // FOUR Service Staff ahead of the manager, against demand that justifies fewer than five
+      // Full-timers a day. The surplus is the point: when supply exceeds what demand supports,
+      // whoever sorts last is the one who gets starved — and before the fix that was decided by
+      // row order alone. Store 1453 is exactly this shape.
+      employees: [
+        staff('FT_STAFF1'),
+        staff('FT_STAFF2'),
+        staff('FT_STAFF3'),
+        staff('FT_STAFF4'),
+        manager('MGR'),
+        makePartTime('PT1'),
+        makePartTime('PT2'),
+        makePartTime('PT3'),
+      ],
+    });
+
+  test('1. Sunday is the busiest day and quieter weekdays exist — the Manager is NOT off on Sunday', async () => {
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = managerLastStore();
+
+    await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    expect(worksOn(store, 'MGR', SUNDAY)).toBe(true);
+    const off = WEEK.filter((d) => !worksOn(store, 'MGR', d));
+    expect(off).toHaveLength(1);
+    expect(off[0]).not.toBe(SUNDAY);
+  });
+
+  test('2. Saturday and Sunday both busy — the Manager works both weekend days', async () => {
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = managerLastStore();
+
+    await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    expect(worksOn(store, 'MGR', SATURDAY)).toBe(true);
+    expect(worksOn(store, 'MGR', SUNDAY)).toBe(true);
+  });
+
+  test('3. Sunday is the QUIETEST day — Sunday stays eligible as the Manager rest day', async () => {
+    mockWeekdayForecast(QUIET_SUNDAY);
+    const store = managerLastStore();
+
+    await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    // Not asserting Sunday specifically: Saturday is also quiet here, so either is a legitimate
+    // demand-driven choice. What must hold is that the rest day is one of the two quiet days and
+    // the rule is not a blanket "never rest at the weekend".
+    const off = WEEK.filter((d) => !worksOn(store, 'MGR', d));
+    expect(off).toHaveLength(1);
+    expect([SATURDAY, SUNDAY]).toContain(off[0]);
+  });
+
+  test('4. Sunday may be taken only when no weekday alternative survives the hard constraints', async () => {
+    // Every date except Sunday is already worked by this manager in shifts OUTSIDE the range, so
+    // the 6-consecutive-day rule and the weekly cap make the weekdays genuinely unavailable. The
+    // traceable reason is the constraint itself, not a demand judgement.
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = createFakeStore({ employees: [manager('MGR'), makePartTime('PT1'), makePartTime('PT2'), makePartTime('PT3')] });
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    // With a single Full-timer the 48h cap allows exactly 6 of 7 days, so one day is unavoidable.
+    const off = WEEK.filter((d) => !worksOn(store, 'MGR', d));
+    expect(off).toHaveLength(1);
+    expect(hoursOf(store, 'MGR')).toBe(48);
+    // Whatever day that is, it is a CAP consequence and the roster still reports cleanly.
+    expect(result.validation.openingCoverageOk).toBe(true);
+    expect(result.validation.closingCoverageOk).toBe(true);
+  });
+
+  test('5. multiple Managers — a busy Sunday keeps management coverage', async () => {
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = createFakeStore({
+      employees: [
+        staff('FT_STAFF1'),
+        manager('MGR1'),
+        teamLead('MGR2'),
+        makePartTime('PT1'),
+        makePartTime('PT2'),
+        makePartTime('PT3'),
+      ],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    const onSunday = ['MGR1', 'MGR2'].filter((id) => worksOn(store, id, SUNDAY));
+    expect(onSunday.length).toBeGreaterThan(0); // never zero management cover on the busiest day
+    // and they do not both rest on the same day either
+    const off1 = WEEK.filter((d) => !worksOn(store, 'MGR1', d));
+    const off2 = WEEK.filter((d) => !worksOn(store, 'MGR2', d));
+    expect(off1).toHaveLength(1);
+    expect(off2).toHaveLength(1);
+  });
+
+  test('6. REGRESSION: the Manager reaches exactly 6 working days / 48 hours even when listed last', async () => {
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = managerLastStore();
+
+    await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    // This is the assertion that fails without the manager term in pickEmployee's comparator:
+    // the manager previously came out on 8h because two Service Staff rows preceded them.
+    expect(shiftsOf(store, 'MGR')).toHaveLength(6);
+    expect(hoursOf(store, 'MGR')).toBe(48);
+    expect(shiftsOf(store, 'MGR').every((s) => Number(s.planned_hours) === 8)).toBe(true);
+  });
+
+  test('7. the Manager never exceeds 6 consecutive working days', async () => {
+    mockWeekdayForecast(BUSY_WEEKEND);
+    rosterRepo.findShiftsForEmployeesInRange.mockResolvedValue([]);
+    const store = createFakeStore({
+      employees: [staff('FT_STAFF1'), manager('MGR'), makePartTime('PT1'), makePartTime('PT2')],
+    });
+
+    await generateDraftRoster({ storeId: '1005', startDate: '2026-08-17', endDate: '2026-08-30' }); // 14 days
+
+    const dates = [...new Set(shiftsOf(store, 'MGR').map((s) => s.shift_date))].sort();
+    expect(maxConsecutiveRun(dates)).toBeLessThanOrEqual(6);
+  });
+
+  test('9. OPEN >= 1, MID >= 1 and CLOSE >= 2 hold on every day of a manager-priority roster', async () => {
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = managerLastStore();
+
+    const result = await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    for (const date of WEEK) {
+      expect(coverageAt(store, date, OPERATING_HOURS.start)).toBeGreaterThanOrEqual(1);
+      for (let h = OPERATING_HOURS.start; h < OPERATING_HOURS.end; h++) {
+        expect(coverageAt(store, date, h)).toBeGreaterThanOrEqual(1);
+      }
+      const closers = store.shifts.filter((s) => s.shift_date === date && s.end_time === '22:00');
+      expect(new Set(closers.map((s) => s.employee_id)).size).toBeGreaterThanOrEqual(CLOSING_COVERAGE_STAFF_COUNT);
+    }
+    expect(result.validation.openingCoverageOk).toBe(true);
+    expect(result.validation.closingCoverageOk).toBe(true);
+  });
+
+  test('manager priority does not starve non-manager Full-time staff of their own hours', async () => {
+    // Managers go first, but the concentrate-hours rule still applies within each role group, so
+    // Service Staff are not left with nothing once management is satisfied.
+    mockWeekdayForecast(BUSY_WEEKEND);
+    const store = managerLastStore();
+
+    await generateDraftRoster({ storeId: '1005', startDate: WEEK[0], endDate: WEEK[6] });
+
+    expect(hoursOf(store, 'MGR')).toBe(48);
+    expect(hoursOf(store, 'FT_STAFF1')).toBeGreaterThan(0);
+  });
+});

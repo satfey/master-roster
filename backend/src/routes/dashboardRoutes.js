@@ -2,6 +2,7 @@ const router = require('express').Router();
 const dashboardController = require('../controllers/dashboardController');
 const authenticate = require('../middleware/authenticate');
 const authorize = require('../middleware/authorize');
+const { storeScope } = require('../middleware/storeScope');
 
 /**
  * NOTE: GET /dashboard and GET /dashboard/store/:id are intentionally
@@ -80,9 +81,9 @@ const authorize = require('../middleware/authorize');
  *   get:
  *     summary: Single-store productivity dashboard
  *     description: >
- *       No store-scope check is applied on this route (unlike most other
- *       store-scoped endpoints) — any authenticated caller with
- *       `productivity:view` can query any store id.
+ *       Store-scoped: a Store Manager may only query their own store and an Area Coach only
+ *       stores in their area. Every role that can reach this route holds `productivity:view`,
+ *       so the permission alone does not decide which store's figures are returned.
  *     tags: [Dashboard]
  *     parameters:
  *       - in: path
@@ -149,6 +150,12 @@ const authorize = require('../middleware/authorize');
  *         $ref: '#/components/responses/ServerError'
  */
 router.get('/', authenticate, authorize('productivity:view'), dashboardController.companyDashboard);
-router.get('/store/:id', authenticate, authorize('productivity:view'), dashboardController.storeDashboard);
+// storeScope is load-bearing here, not decoration: this route returns a store's real per-day
+// gross sales actuals, and `productivity:view` is held by STORE_MANAGER and AREA_COACH alike.
+// Without it, any manager could read any store's revenue by changing the id in the URL — and
+// store.id is a short sequential business code ('1001', '1002', ...), not an unguessable UUID,
+// so the whole chain would be enumerable. storeScope resolves req.params.id, which is exactly
+// the store id this route takes.
+router.get('/store/:id', authenticate, authorize('productivity:view'), storeScope, dashboardController.storeDashboard);
 
 module.exports = router;
