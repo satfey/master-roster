@@ -78,13 +78,43 @@ async function resolveLocations(rows) {
   }
 }
 
+/**
+ * Identity key for an Employee ID that ignores leading zeros.
+ *
+ * The same person has arrived under two IDs: "00106922" from a text cell and "106922" from a
+ * NUMBER cell, because Excel stores the column as a number and the zeros never exist in the file.
+ * Matching was exact-string, so the second upload never recognised the first and created a second
+ * employee. Stores then had every Full-timer twice — store 1508's "6 Full-timers" were 3 people —
+ * and the roster generator scheduled six people's worth of shifts for three humans.
+ *
+ * Only the comparison ignores zeros. The ID written to the database is still exactly as received
+ * for a genuinely new employee, and for a match it is the ID already stored, so existing shifts
+ * keep pointing at the same row.
+ */
+function employeeIdKey(id) {
+  return String(id).trim().replace(/^0+(?=.)/, '');
+}
+
+/**
+ * Every spelling of an ID that could already be stored: as received, without its leading zeros,
+ * and zero-padded back out to 8 characters (the longest ID format in the data) or its own length.
+ */
+function employeeIdCandidates(id) {
+  const key = employeeIdKey(id);
+  const candidates = new Set([String(id).trim(), key]);
+  for (let len = key.length + 1; len <= Math.max(8, String(id).trim().length); len++) candidates.add(key.padStart(len, '0'));
+  return [...candidates];
+}
+
 /** Marks every row sharing an Employee ID with another row in the same file as invalid — never silently picks one when the same source identity appears twice. */
 function markInFileDuplicates(rows) {
   const groups = new Map();
   for (const row of rows) {
     if (row.employeeId === null) continue;
-    if (!groups.has(row.employeeId)) groups.set(row.employeeId, []);
-    groups.get(row.employeeId).push(row);
+    // Keyed without leading zeros, so "00106922" and 106922 in one file are caught as the same person.
+    const key = employeeIdKey(row.employeeId);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
   }
 
   for (const groupRows of groups.values()) {
@@ -107,15 +137,22 @@ async function evaluateRows(buffer) {
   await resolveLocations(rows);
   markInFileDuplicates(rows);
 
-  const employeeIds = [...new Set(rows.filter((r) => r.employeeId !== null).map((r) => r.employeeId))];
-  const existingMap = await repo.findEmployeesByIds(employeeIds);
+  const candidateIds = [...new Set(rows.filter((r) => r.employeeId !== null).flatMap((r) => employeeIdCandidates(r.employeeId)))];
+  const existingMap = await repo.findEmployeesByIds(candidateIds);
+  const existingByKey = new Map([...existingMap.values()].map((e) => [employeeIdKey(e.id), e]));
 
   const previewRows = rows.map((row) => {
     const status = row.errors.length === 0 ? 'valid' : 'invalid';
     let action = null;
 
     if (status === 'valid') {
-      const existing = existingMap.get(row.employeeId);
+      const existing = existingByKey.get(employeeIdKey(row.employeeId));
+      // Same person stored under a differently zero-padded ID: adopt the stored ID so this row
+      // UPDATES that employee instead of creating a duplicate beside them.
+      if (existing && existing.id !== row.employeeId) {
+        row.sourceEmployeeId = row.employeeId;
+        row.employeeId = existing.id;
+      }
       if (!existing) {
         action = 'CREATE';
       } else {
@@ -128,6 +165,7 @@ async function evaluateRows(buffer) {
       status,
       errors: row.errors,
       employeeId: row.employeeId,
+      sourceEmployeeId: row.sourceEmployeeId ?? null,
       title: row.title,
       firstName: row.firstName,
       lastName: row.lastName,

@@ -29,6 +29,12 @@ jest.mock('../../repositories/laborBudgetRepository', () => ({
   upsertStoreActualHours: jest.fn(),
   findStoreActualHours: jest.fn(),
 }));
+// validateRoster resolves target productivity the same way the generator does, which falls back to
+// the store's WHR Target history when no labor_guideline row exists.
+jest.mock('../../repositories/whrTargetRepository', () => ({
+  findLatestProductivity: jest.fn(),
+}));
+const whrTargetRepo = require('../../repositories/whrTargetRepository');
 const rosterRepo = require('../../repositories/rosterRepository');
 const forecastRepo = require('../../repositories/forecastRepository');
 const laborBudgetRepo = require('../../repositories/laborBudgetRepository');
@@ -76,6 +82,7 @@ beforeEach(() => {
   // (forecastedSales 0 -> no tier match -> guideline stays null) unless a test explicitly
   // configures findDailySalesHistory itself.
   forecastRepo.findDailySalesHistory.mockResolvedValue([]);
+  whrTargetRepo.findLatestProductivity.mockResolvedValue(null); // no WHR history unless a test says so
 });
 
 describe('rosterValidationService.validateRoster', () => {
@@ -168,8 +175,40 @@ describe('rosterValidationService.validateRoster', () => {
 
     const result = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
 
+    // Still measured and returned for reporting...
     expect(result.overstaffedHours.length).toBeGreaterThan(0);
-    expect(result.status).toBe('WARNING');
+    // ...but not a warning: overstaffing on its own leaves the roster OK. See the status rule in
+    // rosterValidationService for why — it is always a by-product of break cover, the closing pair
+    // or the Part-time legal minimum, and a manager cannot change shift times to act on it.
+    expect(result.status).toBe('OK');
+  });
+
+  test('overstaffing never turns a roster into a WARNING, while understaffing still does', async () => {
+    const quiet = () => Array.from({ length: 13 }, (_, i) => forecastRow('2026-08-24', 9 + i, 100));
+
+    // Six people all day against a ceiling of 1: heavily overstaffed, nothing understaffed.
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: ['E1', 'E2', 'E3', 'E4', 'E5', 'E6'].map((id, i) =>
+        makeShift({ id: `s${i}`, employeeId: id, date: '2026-08-24', start: '09:00', end: '22:00', hours: 12, employee: makeEmployee(id) })
+      ),
+    });
+    forecastRepo.findForecastRows.mockResolvedValue(quiet());
+    const over = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+    expect(over.overstaffedHours.length).toBeGreaterThan(0);
+    expect(over.status).toBe('OK');
+
+    // Nobody after 14:00: understaffed, which IS still a warning.
+    mockData({
+      guideline: { target_productivity: 500, min_staff_per_shift: 1 },
+      shifts: ['E1', 'E2'].map((id, i) =>
+        makeShift({ id: `u${i}`, employeeId: id, date: '2026-08-24', start: i === 0 ? '09:00' : '18:00', end: i === 0 ? '14:00' : '22:00', hours: 4, employee: makeEmployee(id) })
+      ),
+    });
+    forecastRepo.findForecastRows.mockResolvedValue(quiet());
+    const under = await validateRoster({ storeId: '1005', startDate: '2026-08-24', endDate: '2026-08-24' });
+    expect(under.understaffedHours.length).toBeGreaterThan(0);
+    expect(under.status).not.toBe('OK');
   });
 
   // The closing hour must carry CLOSING_COVERAGE_STAFF_COUNT people whatever the sales say, so
@@ -585,3 +624,70 @@ describe('rosterValidationService.validateRoster — Full-time working hours, br
     expect(result.ftWeeklyHourViolations).toHaveLength(0);
   });
 });
+
+/**
+ * Regression: the validator must judge a roster against the SAME demand ceiling the generator
+ * sized it to.
+ *
+ * It used the raw labor_guideline row, which most real stores do not have, so target_productivity
+ * was null and every hour's ceiling collapsed to 1 — while the generator resolved productivity from
+ * WHR history and correctly staffed busy hours to 3. Store 1001, September 2026: 169 hours reported
+ * as "overstaffed" across all 30 days, every one of them sized correctly.
+ */
+describe('rosterValidationService — demand ceiling uses the resolved target productivity', () => {
+  const DATE = '2026-08-24';
+  const threePeopleAllDay = () =>
+    ['E1', 'E2', 'E3'].map((id, i) =>
+      makeShift({ id: `s${i}`, employeeId: id, date: DATE, start: '09:00', end: '22:00', hours: 12, employee: makeEmployee(id) })
+    );
+  // 3,000 an hour against productivity 1,000 justifies exactly 3 people every hour.
+  const busyAllDay = () => Array.from({ length: 13 }, (_, i) => forecastRow(DATE, 9 + i, 3000));
+
+  test('no labor_guideline but WHR productivity exists: correctly-sized hours are NOT flagged', async () => {
+    mockData({ guideline: null, shifts: threePeopleAllDay() });
+    whrTargetRepo.findLatestProductivity.mockResolvedValue({ productivity: 1000, reportMonth: '2026-07-01' });
+    forecastRepo.findForecastRows.mockResolvedValue(busyAllDay());
+
+    const result = await validateRoster({ storeId: '1005', startDate: DATE, endDate: DATE });
+
+    expect(result.overstaffedHours).toEqual([]);
+  });
+
+  test('the same roster with no productivity anywhere still falls back to the flat ceiling', async () => {
+    // Guard on the direction of the fix: without any resolvable productivity the ceiling is the
+    // operational minimum, so three people ARE over it — the check still has teeth.
+    mockData({ guideline: null, shifts: threePeopleAllDay() });
+    whrTargetRepo.findLatestProductivity.mockResolvedValue(null);
+    forecastRepo.findForecastRows.mockResolvedValue(busyAllDay());
+
+    const result = await validateRoster({ storeId: '1005', startDate: DATE, endDate: DATE });
+
+    expect(result.overstaffedHours.length).toBeGreaterThan(0);
+  });
+
+  test('genuine overstaffing is still reported once productivity is resolved', async () => {
+    const sixPeople = ['E1', 'E2', 'E3', 'E4', 'E5', 'E6'].map((id, i) =>
+      makeShift({ id: `s${i}`, employeeId: id, date: DATE, start: '09:00', end: '22:00', hours: 12, employee: makeEmployee(id) })
+    );
+    mockData({ guideline: null, shifts: sixPeople });
+    whrTargetRepo.findLatestProductivity.mockResolvedValue({ productivity: 1000, reportMonth: '2026-07-01' });
+    forecastRepo.findForecastRows.mockResolvedValue(busyAllDay());
+
+    const result = await validateRoster({ storeId: '1005', startDate: DATE, endDate: DATE });
+
+    expect(result.overstaffedHours.length).toBe(13); // 6 people against a ceiling of 3 (+1 tolerance), every hour
+  });
+
+  test('a manually configured target_productivity still wins over WHR history', async () => {
+    mockData({ guideline: { target_productivity: 3000, min_staff_per_shift: 1 }, shifts: threePeopleAllDay() });
+    whrTargetRepo.findLatestProductivity.mockResolvedValue({ productivity: 1000, reportMonth: '2026-07-01' });
+    forecastRepo.findForecastRows.mockResolvedValue(busyAllDay());
+
+    const result = await validateRoster({ storeId: '1005', startDate: DATE, endDate: DATE });
+
+    // 3,000 / 3,000 justifies 1 person, so 3 people are over (1 + 1 tolerance) — the manual value was used.
+    expect(result.overstaffedHours.length).toBeGreaterThan(0);
+    expect(whrTargetRepo.findLatestProductivity).not.toHaveBeenCalled();
+  });
+});
+

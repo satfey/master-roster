@@ -1,6 +1,12 @@
 import './DemandScheduleGrid.css';
 
-/** Headcount Demand vs Schedule (AI Mapping). Cells read "demand/scheduled". */
+/**
+ * Headcount Demand vs Schedule (AI Mapping).
+ *
+ * Cells read "scheduled/demand" — people on the floor first, then the most that hour's sales can
+ * justify. It used to be the other way round, and "3/2" (3 justified, 2 scheduled) was read as
+ * "3 people where 2 were needed", i.e. the opposite of what it meant.
+ */
 export default function DemandScheduleGrid({ days, rows, legend }) {
   return (
     <>
@@ -34,8 +40,11 @@ export default function DemandScheduleGrid({ days, rows, legend }) {
                   if (!cell) return <td key={day} />;
                   return (
                     <td key={day}>
-                      <span className={`demand-cell demand-cell--${cell.status}`}>
-                        {cell.demand}/{cell.scheduled}
+                      <span
+                        className={`demand-cell demand-cell--${cell.status}`}
+                        title={`จัดแล้ว ${cell.scheduled} คน / ยอดขายรองรับได้ ${cell.demand} คน (ขั้นต่ำ ${cell.required ?? 1} คน)`}
+                      >
+                        {cell.scheduled}/{cell.demand}
                       </span>
                     </td>
                   );

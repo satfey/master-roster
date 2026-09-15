@@ -185,6 +185,81 @@ describe('employeeImportService — Employee ID validation', () => {
   });
 });
 
+describe('employeeImportService — the same person under a differently zero-padded Employee ID', () => {
+  // Real defect: Excel keeps the Employee ID column as a NUMBER, so a file can carry 106922 where
+  // the database already holds '00106922'. Matching was exact-string, the second upload created a
+  // second employee, and stores ended up with every Full-timer twice (store 1508's "6 Full-timers"
+  // were 3 people), which the roster generator then scheduled as six.
+  const EXISTING = {
+    id: '00106922', store_id: '1005', first_name: 'Old', last_name: 'Name', title: null, first_name_local: null,
+    last_name_local: null, email: null, position: null, position_time_type: null, store_name: null,
+    default_weekly_hours: null, pay_rate_type: null, sl_comp_plan: null, sl_comp_amount: null, sl_comp_currency: null,
+    sl_comp_frequency: null, hr_comp_plan: null, hr_comp_amount: null, hr_comp_currency: null, hr_comp_frequency: null,
+  };
+
+  test('a NUMBER cell 106922 updates the stored 00106922 instead of creating a duplicate', async () => {
+    fakeStores([{ id: '1005', name: 'DQ1005-CENTER ONE' }]);
+    const table = createFakeEmployeeTable([{ ...EXISTING }]);
+    const buffer = await buildWorkbook([row({ employeeId: 106922, firstName: 'New', lastName: 'Name', location: '1005' })]);
+
+    const preview = await previewEmployeeImport(buffer);
+    expect(preview.rows[0].action).toBe('UPDATE');
+    expect(preview.rows[0].employeeId).toBe('00106922'); // the stored ID is adopted
+    expect(preview.rows[0].sourceEmployeeId).toBe('106922'); // and what the file said is still visible
+
+    const result = await commitEmployeeImport(buffer);
+    expect(repo.createEmployees).toHaveBeenLastCalledWith([]);
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(1);
+    expect(table.size).toBe(1); // still exactly one employee
+    expect(table.get('00106922').first_name).toBe('New');
+  });
+
+  test('a padded ID in the file matches an unpadded stored ID the same way', async () => {
+    fakeStores([{ id: '1005', name: 'DQ1005-CENTER ONE' }]);
+    const table = createFakeEmployeeTable([{ ...EXISTING, id: '106922' }]);
+    const buffer = await buildWorkbook([row({ employeeId: '00106922', firstName: 'New', lastName: 'Name', location: '1005' })]);
+
+    const result = await commitEmployeeImport(buffer);
+    expect(result.created).toBe(0);
+    expect(result.updated).toBe(1);
+    expect(table.size).toBe(1);
+    expect(table.has('106922')).toBe(true);
+  });
+
+  test('the same person twice in ONE file, once padded and once not, is flagged as a duplicate', async () => {
+    fakeStores([{ id: '1005', name: 'DQ1005-CENTER ONE' }]);
+    const buffer = await buildWorkbook([
+      row({ employeeId: '00106922', firstName: 'A', location: '1005' }),
+      row({ employeeId: 106922, firstName: 'A', location: '1005' }),
+    ]);
+
+    const preview = await previewEmployeeImport(buffer);
+    expect(preview.rows.every((r) => r.status === 'invalid')).toBe(true);
+    expect(preview.rows[0].errors.some((e) => e.includes('Duplicate Employee ID'))).toBe(true);
+  });
+
+  test('genuinely different IDs that only share digits are NOT merged', async () => {
+    fakeStores([{ id: '1005', name: 'DQ1005-CENTER ONE' }]);
+    createFakeEmployeeTable([{ ...EXISTING, id: '00106922' }]);
+    // 1069220 is a different number, not 106922 with zeros moved around.
+    const buffer = await buildWorkbook([row({ employeeId: '1069220', firstName: 'Other', location: '1005' })]);
+
+    const preview = await previewEmployeeImport(buffer);
+    expect(preview.rows[0].action).toBe('CREATE');
+    expect(preview.rows[0].employeeId).toBe('1069220');
+  });
+
+  test('a brand-new ID is still written exactly as received, zeros included', async () => {
+    fakeStores([{ id: '1005', name: 'DQ1005-CENTER ONE' }]);
+    const buffer = await buildWorkbook([row({ employeeId: '00055555', firstName: 'New', location: '1005' })]);
+
+    const result = await commitEmployeeImport(buffer);
+    expect(result.created).toBe(1);
+    expect(repo.createEmployees.mock.calls[0][0][0].id).toBe('00055555');
+  });
+});
+
 describe('employeeImportService — Location resolution (store_name / store_id)', () => {
   test('6. Location resolves to store_id and is also stored verbatim as store_name', async () => {
     fakeStores([{ id: '1005', name: 'DQ1005-CENTER ONE' }]);

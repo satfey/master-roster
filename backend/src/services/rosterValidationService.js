@@ -2,7 +2,7 @@ const rosterRepo = require('../repositories/rosterRepository');
 const forecastRepo = require('../repositories/forecastRepository');
 const laborBudgetRepo = require('../repositories/laborBudgetRepository');
 const { computeHourlyLaborDemand } = require('./laborDemandService');
-const { resolveSalesLevel, computeLaborCostBudget } = require('./laborBudgetService');
+const { resolveSalesLevel, computeLaborCostBudget, resolveTargetProductivity } = require('./laborBudgetService');
 const { computeMonthlyCapacity } = require('./monthlyCapacityService');
 const { OPERATING_HOURS, CLOSING_COVERAGE_STAFF_COUNT, operatingHourList, daypartToHour } = require('./storeOperatingHours');
 const { eachDateInRange, monthKey, monthRange } = require('../utils/dateRange');
@@ -131,6 +131,23 @@ async function validateRoster({ storeId, startDate, endDate }) {
   const warnings = [];
   if (!guideline) warnings.push('No labor guideline configured for this store — coverage is still checked, but labor cost %, productivity, and labor budget cannot be compared against a target.');
 
+  // The demand ceiling must be computed from the SAME target productivity the generator used.
+  //
+  // It was computed from the raw labor_guideline row. Most real stores have no such row, so
+  // target_productivity was null here and every hour's maxJustifiedHeadcount collapsed to 1 — while
+  // rosterGenerationService (and GET /labor/demand) resolve it from the store's WHR history and
+  // legitimately staff busy hours to 3 or 4. The validator then flagged every hour holding 3+
+  // people as overstaffed. Store 1001, September 2026: 169 "overstaffed" hours across all 30
+  // days, every one of them an hour the generator had sized correctly against productivity 1047.
+  // That was two services disagreeing about the ceiling, not overstaffing.
+  //
+  // Only target_productivity is resolved; min_staff_per_shift and every other guideline field
+  // still come from the row as-is.
+  const manualTargetProductivity = guideline?.target_productivity != null ? Number(guideline.target_productivity) : null;
+  const resolvedProductivity = await resolveTargetProductivity({ storeId, manualTargetProductivity });
+  const demandGuideline =
+    resolvedProductivity.value != null ? { ...(guideline || {}), target_productivity: resolvedProductivity.value } : guideline;
+
   // --- Required headcount per (date, hour), from the hourly forecast -----
   const forecastByDate = new Map();
   for (const row of forecastRows) {
@@ -153,7 +170,7 @@ async function validateRoster({ storeId, startDate, endDate }) {
       }
       continue;
     }
-    for (const d of computeHourlyLaborDemand({ hourlyForecast, guideline })) {
+    for (const d of computeHourlyLaborDemand({ hourlyForecast, guideline: demandGuideline })) {
       requiredByDateHour.set(`${date}|${d.hour}`, d.requiredHeadcount);
       maxJustifiedByDateHour.set(`${date}|${d.hour}`, d.maxJustifiedHeadcount);
     }
@@ -446,7 +463,19 @@ async function validateRoster({ storeId, startDate, endDate }) {
   let status = 'OK';
   if (hasHardViolation) {
     status = 'FAILED';
-  } else if (understaffedHours.length > 0 || overstaffedHours.length > 0 || overLaborBudget) {
+  } else if (understaffedHours.length > 0 || overLaborBudget) {
+    // Overstaffing is deliberately NOT a warning. overstaffedHours is still computed and returned
+    // (the roster quality evaluator reads it), but it no longer changes the roster's status.
+    //
+    // On a generated roster, every hour above the demand ceiling is a side effect of a legal or
+    // operational rule, never a choice: the fill phase only adds people to hours with room, and
+    // the excess lands on neighbouring hours because shifts cannot be cut any smaller. Classified
+    // across six real rosters (store 1001 for September plus five store-weeks), the 25 hours still
+    // flagged were: 10 next to an employee's break (someone had to cover it), 9 on the closing hour
+    // (two mandatory closers plus a shift that must run to close), and the rest the Part-time
+    // 4-hour legal minimum stretching a break-cover shift over the hours around it. And a manager
+    // cannot act on it — the roster screen only lets them change WHO works a shift, not its times.
+    // A warning that is always explained by the rules and can never be acted on is noise.
     status = 'WARNING'; // includes breakCoverageGapViolations — it's always a subset of understaffedHours, not a separate FAILED condition
   }
 

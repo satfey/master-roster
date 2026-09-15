@@ -23,11 +23,20 @@ describe("toStoreIssues — store-level findings come from the backend verdict",
     expect(issues[0].message).toContain("2 ชั่วโมง");
   });
 
-  // The backend grades these as WARNING, never FAILED — the display must agree,
+  // The backend grades understaffing as WARNING, never FAILED — the display must agree,
   // or a manager sees a blocking error the generator never raised.
-  test("under/overstaffing is a warning, matching how the backend grades it", () => {
-    const issues = toStoreIssues({ understaffedHours: ["2026-09-01 14:00"], overstaffedHours: ["2026-09-02 10:00"] });
-    expect(issues.every((i) => i.severity === "warning")).toBe(true);
+  test("understaffing is a warning, matching how the backend grades it", () => {
+    const issues = toStoreIssues({ understaffedHours: ["2026-09-01 14:00"] });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toMatchObject({ code: "UNDERSTAFFED", severity: "warning" });
+  });
+
+  // Overstaffing is not shown to the manager at all: on a generated roster it is always caused by
+  // break cover, the two mandatory closers or the Part-time 4-hour minimum, and shift times cannot
+  // be edited to act on it.
+  test("overstaffing produces no issue, even when the backend reports overstaffed hours", () => {
+    const issues = toStoreIssues({ overstaffedHours: ["2026-09-02 10:00", "2026-09-02 21:00"] });
+    expect(issues).toEqual([]);
   });
 
   test("a clean validation produces no issues at all", () => {

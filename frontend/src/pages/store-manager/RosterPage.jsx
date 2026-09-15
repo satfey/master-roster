@@ -309,7 +309,7 @@ export default function RosterPage() {
 
       <Card title="การเปิด-ปิดร้าน และจำนวนพนักงานต่อวัน" icon={Users}>
         <p className="roster-page__hint">
-          ชั่วโมงที่คนไม่พอ/คนเกิน มาจากการตรวจของระบบหลังบ้าน เทียบกับความต้องการรายชั่วโมงที่
+          ชั่วโมงที่คนไม่พอ มาจากการตรวจของระบบหลังบ้าน เทียบกับความต้องการรายชั่วโมงที่
           คำนวณจากยอดขายพยากรณ์และ target productivity ของสาขา (เวลาทำการ 09:00-22:00)
         </p>
         <div className="scroll-x">
@@ -320,13 +320,12 @@ export default function RosterPage() {
                 <th>ยอดขายพยากรณ์</th>
                 <th>จัดแล้ว</th>
                 <th>ชม.คนไม่พอ</th>
-                <th>ชม.คนเกิน</th>
               </tr>
             </thead>
             <tbody>
               {coverage.map((row) => {
                 const sales = roster.dailySales[row.day] ?? 0;
-                const hourIssues = roster.validation?.hourIssuesByDate?.[row.day] ?? { understaffed: 0, overstaffed: 0 };
+                const hourIssues = roster.validation?.hourIssuesByDate?.[row.day] ?? { understaffed: 0 };
                 return (
                   <tr key={row.day}>
                     <td>{row.day}</td>
@@ -334,9 +333,6 @@ export default function RosterPage() {
                     <td>{row.onDuty} คน</td>
                     <td className={hourIssues.understaffed > 0 ? 'is-bad' : 'is-good'}>
                       {hourIssues.understaffed > 0 ? `${hourIssues.understaffed} ชม.` : '-'}
-                    </td>
-                    <td className={hourIssues.overstaffed > 0 ? 'is-bad' : 'is-good'}>
-                      {hourIssues.overstaffed > 0 ? `${hourIssues.overstaffed} ชม.` : '-'}
                     </td>
                   </tr>
                 );
@@ -353,7 +349,7 @@ export default function RosterPage() {
       <Card>
         <h2 className="roster-page__heading">Headcount Demand vs Schedule (AI Mapping)</h2>
         <p className="roster-page__hint">
-          ตัวเลขคือ ต้องการ/จัดแล้ว — ความต้องการรายชั่วโมงมาจากระบบหลังบ้าน (ยอดขายพยากรณ์ ÷ target productivity)
+          ตัวเลขคือ จัดแล้ว/ยอดขายรองรับได้ (ยอดขายพยากรณ์ ÷ target productivity) — แดง = ต่ำกว่าขั้นต่ำ, เหลือง = เกินที่ยอดขายรองรับได้, เขียว = พอดี (ชั่วโมงปิดร้านนับคนปิด 2 คนเป็นขั้นต่ำ)
         </p>
         <DemandScheduleGrid days={roster.days} rows={demandRows} legend={ROSTER_STATUS_LEGEND} />
       </Card>

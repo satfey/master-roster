@@ -42,9 +42,10 @@ export function toStoreIssues(validation) {
   for (const [date, hours] of groupHoursByDate(validation.understaffedHours)) {
     issues.push({ code: 'UNDERSTAFFED', day: date, severity: 'warning', message: `${date}: คนไม่พอ ${hours.length} ชั่วโมง (${hours.join(', ')})` });
   }
-  for (const [date, hours] of groupHoursByDate(validation.overstaffedHours)) {
-    issues.push({ code: 'OVERSTAFFED', day: date, severity: 'warning', message: `${date}: คนเกินความต้องการ ${hours.length} ชั่วโมง (${hours.join(', ')})` });
-  }
+  // Overstaffing is intentionally not raised as an issue. On a generated roster it is always a
+  // by-product of break cover, the two mandatory closers or the Part-time 4-hour legal minimum,
+  // and a manager cannot change shift times to act on it — see the status rule in
+  // rosterValidationService. The backend still returns overstaffedHours for reporting.
 
   for (const entry of validation.monthlyGuidelineViolations ?? []) {
     issues.push({
