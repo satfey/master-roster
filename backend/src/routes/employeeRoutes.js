@@ -52,11 +52,14 @@ const { employeeScope } = require('../middleware/employeeScope');
  *       500:
  *         $ref: '#/components/responses/ServerError'
  *   post:
- *     summary: Create an employee (manual, single-record)
+ *     summary: Add an employee to a store (Staff Management)
  *     description: >
- *       employee.id has no auto-generated default — it must be supplied
- *       explicitly, never invented. For bulk creation from a file, use
- *       POST /employee/import instead.
+ *       Requires employee:manage (Admin; Store Manager for their own store — storeScope checks
+ *       the body's storeId). employee.id has no generated default, so employeeId must be supplied.
+ *       The ID is matched against existing employees IGNORING leading zeros, so "106922" and
+ *       "00106922" are the same person: a previously removed employee of the same store is
+ *       re-activated (200), any other match is 409. positionTimeType is required — the roster
+ *       generator never schedules an employee without one. For bulk creation use POST /employee/import.
  *     tags: [Employee]
  *     requestBody:
  *       required: true
@@ -64,7 +67,7 @@ const { employeeScope } = require('../middleware/employeeScope');
  *         application/json:
  *           schema:
  *             type: object
- *             required: [employeeId, storeId]
+ *             required: [employeeId, storeId, firstName, positionTimeType]
  *             properties:
  *               employeeId:
  *                 type: string
@@ -79,19 +82,29 @@ const { employeeScope } = require('../middleware/employeeScope');
  *               lastName:
  *                 type: string
  *                 nullable: true
+ *               firstNameLocal:
+ *                 type: string
+ *                 nullable: true
+ *               lastNameLocal:
+ *                 type: string
+ *                 nullable: true
  *               position:
  *                 type: string
  *                 nullable: true
- *               isActive:
- *                 type: boolean
- *                 default: true
+ *               positionTimeType:
+ *                 type: string
+ *                 enum: ['Full time', 'Part time']
+ *               defaultWeeklyHours:
+ *                 type: number
+ *                 nullable: true
+ *                 description: 1-48. Omitted means the generator's default of 48.
  *           example:
  *             employeeId: '000123'
  *             storeId: '1005'
  *             firstName: Somchai
  *             lastName: Jaidee
- *             position: Cashier
- *             isActive: true
+ *             position: Service Staff
+ *             positionTimeType: Part time
  *     responses:
  *       201:
  *         description: Employee created
@@ -113,8 +126,12 @@ const { employeeScope } = require('../middleware/employeeScope');
  *                 last_name: Jaidee
  *                 position: Cashier
  *                 is_active: true
+ *       200:
+ *         description: A previously removed employee of the same store was re-activated.
+ *       409:
+ *         description: That Employee ID (ignoring leading zeros) already exists.
  *       400:
- *         description: employeeId or storeId missing.
+ *         description: employeeId, storeId, a name or positionTimeType missing or invalid.
  *         content:
  *           application/json:
  *             schema: { $ref: '#/components/schemas/ApiError' }
@@ -127,10 +144,10 @@ const { employeeScope } = require('../middleware/employeeScope');
  *         $ref: '#/components/responses/ServerError'
  * /employee/{id}:
  *   put:
- *     summary: Update an employee
+ *     summary: Update an employee (partial — only the fields sent are written)
  *     description: >
- *       Updating a non-existent id currently surfaces as a 500 (the query
- *       uses `.single()`, which errors on zero matching rows) rather than 404.
+ *       Requires employee:manage; employeeScope limits a Store Manager to their own store's
+ *       employees. An unknown id is a 404. positionTimeType must be 'Full time' or 'Part time'.
  *     tags: [Employee]
  *     parameters:
  *       - in: path
@@ -193,7 +210,13 @@ const { employeeScope } = require('../middleware/employeeScope');
  *       500:
  *         $ref: '#/components/responses/ServerError'
  *   delete:
- *     summary: Deactivate an employee (soft delete — sets is_active to false)
+ *     summary: Remove an employee
+ *     description: >
+ *       Deletes the row from the database. An employee who already has shifts cannot be deleted
+ *       (shift.employee_id is ON DELETE RESTRICT, and deleting would destroy roster history), so
+ *       they are deactivated instead. The response data says which happened —
+ *       { id, deleted, deactivated, futureShiftCount } — so the caller can prompt a regenerate
+ *       when future shifts remain.
  *     tags: [Employee]
  *     parameters:
  *       - in: path
@@ -202,15 +225,17 @@ const { employeeScope } = require('../middleware/employeeScope');
  *         schema: { type: string, example: '000123' }
  *     responses:
  *       200:
- *         description: Employee deactivated
+ *         description: Employee deleted, or deactivated because it has roster history
  *         content:
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/ApiResponse'
  *             example:
  *               success: true
- *               message: Employee deactivated
- *               data: null
+ *               message: Employee deleted
+ *               data: { id: '000123', deleted: true, deactivated: false, futureShiftCount: 0 }
+ *       404:
+ *         description: Employee not found
  *       401:
  *         $ref: '#/components/responses/UnauthorizedError'
  *       403:

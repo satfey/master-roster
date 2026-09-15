@@ -134,3 +134,22 @@
   color: var(--text-muted);
   font-family: var(--font-thai);
 }
+
+.staff__message {
+  margin: 0 0 var(--sp-3);
+  padding: var(--sp-2) var(--sp-3);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-thai);
+  font-size: 11px;
+}
+
+.staff__message--error { background: var(--red-soft); color: #b91c1c; }
+.staff__message--notice { background: var(--green-soft); color: #15803d; }
+
+.staff__form-actions {
+  display: flex;
+  gap: var(--sp-2);
+}
+
+.staff-table__delete:disabled,
+.staff-table__select:disabled { opacity: 0.5; cursor: not-allowed; }

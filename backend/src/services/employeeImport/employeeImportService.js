@@ -1,6 +1,7 @@
 const { parseEmployeeMasterWorkbook } = require('./excelParser');
 const { transformRows } = require('./transform');
 const repo = require('../../repositories/employeeImportRepository');
+const { employeeIdKey, employeeIdCandidates } = require('../../utils/employeeId');
 
 // Single source of truth for every column this importer writes — used to
 // build both the create/update payloads and the NO_CHANGE comparison, so
@@ -76,34 +77,6 @@ async function resolveLocations(rows) {
       row.resolvedStoreId = match.id;
     }
   }
-}
-
-/**
- * Identity key for an Employee ID that ignores leading zeros.
- *
- * The same person has arrived under two IDs: "00106922" from a text cell and "106922" from a
- * NUMBER cell, because Excel stores the column as a number and the zeros never exist in the file.
- * Matching was exact-string, so the second upload never recognised the first and created a second
- * employee. Stores then had every Full-timer twice — store 1508's "6 Full-timers" were 3 people —
- * and the roster generator scheduled six people's worth of shifts for three humans.
- *
- * Only the comparison ignores zeros. The ID written to the database is still exactly as received
- * for a genuinely new employee, and for a match it is the ID already stored, so existing shifts
- * keep pointing at the same row.
- */
-function employeeIdKey(id) {
-  return String(id).trim().replace(/^0+(?=.)/, '');
-}
-
-/**
- * Every spelling of an ID that could already be stored: as received, without its leading zeros,
- * and zero-padded back out to 8 characters (the longest ID format in the data) or its own length.
- */
-function employeeIdCandidates(id) {
-  const key = employeeIdKey(id);
-  const candidates = new Set([String(id).trim(), key]);
-  for (let len = key.length + 1; len <= Math.max(8, String(id).trim().length); len++) candidates.add(key.padStart(len, '0'));
-  return [...candidates];
 }
 
 /** Marks every row sharing an Employee ID with another row in the same file as invalid — never silently picks one when the same source identity appears twice. */

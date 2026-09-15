@@ -16,6 +16,7 @@ import { PERMISSIONS as P } from './permissions';
  *   VIEW_LABOR_GUIDELINE   -> labor_guideline:view   (Admin + Area Coach)
  *   MANAGE_LABOR_GUIDELINE -> labor_guideline:manage (Admin only)
  *   IMPORT_FILES           -> data:import / sales:import
+ *   MANAGE_STAFF           -> employee:manage        (Admin; Store Manager for their own store only)
  */
 export const ROLE_PERMISSIONS = {
   [ROLES.ADMIN]: Object.values(P),
